@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { IconChevronDownOutline14, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HippomemoApi } from './api.ts'
 import type { HippomemoLocaleKey } from './locales.ts'
@@ -27,16 +27,32 @@ function HippomemoSelect({ value, placeholder, options, onChange }: {
   onChange: (value: string) => void
 }): ReactNode {
   const [open, setOpen] = useState(false)
+  const [side, setSide] = useState<'bottom' | 'top'>('bottom')
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
   const selected = options.find(option => option.value === value)
   const label = selected?.label ?? placeholder
+
+  const openMenu = (): void => {
+    const rect = triggerRef.current?.getBoundingClientRect()
+    if (rect !== undefined) {
+      const spaceBelow = window.innerHeight - rect.bottom
+      const spaceAbove = rect.top
+      setSide(spaceBelow >= 220 || spaceBelow >= spaceAbove ? 'bottom' : 'top')
+    }
+    setOpen(true)
+  }
+
   return (
     <Menu
       open={open}
+      portal
+      side={side}
       anchor={(
         <button
+          ref={triggerRef}
           type="button"
           className={open ? 'hippomemo-select hippomemo-select-open' : 'hippomemo-select'}
-          onClick={() => { setOpen(previous => previous === false) }}
+          onClick={openMenu}
         >
           <span className="hippomemo-select-label">{label}</span>
           <span className="hippomemo-select-chevron" aria-hidden="true">
