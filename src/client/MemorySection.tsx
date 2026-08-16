@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HippomemoApi } from './api.ts'
 import type { HippomemoLocaleKey } from './locales.ts'
 import type { MemoryKind, MemoryPatchInput, MemoryPutInput, MemoryRecord, MemoryScope, MemoryStats, MemoryStatus } from '../types.ts'
@@ -13,6 +14,37 @@ export interface MemorySectionProps {
 const KINDS: MemoryKind[] = ['insight', 'decision', 'fact', 'preference', 'constraint']
 const SCOPES: MemoryScope[] = ['global', 'workspace', 'project']
 const STATUSES: MemoryStatus[] = ['active', 'archived', 'superseded', 'candidate']
+
+interface SelectOption {
+  value: string
+  label: string
+}
+
+function HippomemoSelect({ value, placeholder, options, onChange }: {
+  value: string
+  placeholder: string
+  options: SelectOption[]
+  onChange: (value: string) => void
+}): ReactNode {
+  const [open, setOpen] = useState(false)
+  const selected = options.find(option => option.value === value)
+  const label = selected?.label ?? placeholder
+  return (
+    <Menu
+      open={open}
+      anchor={(
+        <button type="button" className="hippomemo-select" onClick={() => { setOpen(previous => previous === false) }}>
+          <span className="hippomemo-select-label">{label}</span>
+          <span className="hippomemo-select-caret" aria-hidden="true">▾</span>
+        </button>
+      )}
+      items={options.map(option => ({ id: option.value, label: option.label }))}
+      selectedId={value}
+      onSelect={(id) => { onChange(id); setOpen(false) }}
+      onClose={() => { setOpen(false) }}
+    />
+  )
+}
 
 export function MemorySection({ api, t }: MemorySectionProps): ReactNode {
   const [q, setQ] = useState('')
@@ -92,18 +124,24 @@ export function MemorySection({ api, t }: MemorySectionProps): ReactNode {
           placeholder={t('searchPlaceholder')}
           onChange={event => { setQ(event.currentTarget.value) }}
         />
-        <select value={kind} onChange={event => { setKind(event.currentTarget.value) }}>
-          <option value="">{t('allKinds')}</option>
-          {KINDS.map(value => <option key={value} value={value}>{t(value)}</option>)}
-        </select>
-        <select value={scope} onChange={event => { setScope(event.currentTarget.value) }}>
-          <option value="">{t('allScopes')}</option>
-          {SCOPES.map(value => <option key={value} value={value}>{t(value)}</option>)}
-        </select>
-        <select value={status} onChange={event => { setStatus(event.currentTarget.value) }}>
-          <option value="">{t('allStatuses')}</option>
-          {STATUSES.map(value => <option key={value} value={value}>{t(value)}</option>)}
-        </select>
+        <HippomemoSelect
+          value={kind}
+          placeholder={t('allKinds')}
+          options={[{ value: '', label: t('allKinds') }, ...KINDS.map(value => ({ value, label: t(value) }))]}
+          onChange={setKind}
+        />
+        <HippomemoSelect
+          value={scope}
+          placeholder={t('allScopes')}
+          options={[{ value: '', label: t('allScopes') }, ...SCOPES.map(value => ({ value, label: t(value) }))]}
+          onChange={setScope}
+        />
+        <HippomemoSelect
+          value={status}
+          placeholder={t('allStatuses')}
+          options={[{ value: '', label: t('allStatuses') }, ...STATUSES.map(value => ({ value, label: t(value) }))]}
+          onChange={setStatus}
+        />
         <button type="button" className="hippomemo-button" onClick={() => { setEditing('new') }}>
           {t('newMemory')}
         </button>
@@ -204,14 +242,20 @@ function MemoryEditor({ t, initial, onCancel, onSave }: EditorProps): ReactNode 
     <div className="hippomemo-form">
       <label>{t('titleLabel')}<input value={title} onChange={event => { setTitle(event.currentTarget.value) }} /></label>
       <label>{t('kind')}
-        <select value={kind} onChange={event => { setKind(event.currentTarget.value as MemoryKind) }}>
-          {KINDS.map(value => <option key={value} value={value}>{t(value)}</option>)}
-        </select>
+        <HippomemoSelect
+          value={kind}
+          placeholder={t('kind')}
+          options={KINDS.map(value => ({ value, label: t(value) }))}
+          onChange={(value) => { setKind(value as MemoryKind) }}
+        />
       </label>
       <label>{t('scope')}
-        <select value={scope} onChange={event => { setScope(event.currentTarget.value as MemoryScope) }}>
-          {SCOPES.map(value => <option key={value} value={value}>{t(value)}</option>)}
-        </select>
+        <HippomemoSelect
+          value={scope}
+          placeholder={t('scope')}
+          options={SCOPES.map(value => ({ value, label: t(value) }))}
+          onChange={(value) => { setScope(value as MemoryScope) }}
+        />
       </label>
       <label>{t('importanceLabel')}<input type="number" min="0" max="1" step="0.1" value={importance} onChange={event => { setImportance(event.currentTarget.value) }} /></label>
       <label>{t('contentLabel')}<textarea value={content} onChange={event => { setContent(event.currentTarget.value) }} /></label>
