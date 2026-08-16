@@ -16,7 +16,7 @@ export const inject = ['tools', 'systemPrompt', 'memory', 'agents']
 
 const TEXT_OUTPUT = {
   schema: { type: 'string' as const },
-  render: (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }],
+  render: (_args: unknown, value: string) => [{ type: 'text' as const, text: value }],
 }
 
 const GUIDANCE = [
@@ -46,7 +46,7 @@ export function apply(ctx: Context): void {
       importance: { type: 'number', description: '0 to 1. Defaults to 0.5.' },
     },
     output: TEXT_OUTPUT,
-    execute(args, exec) {
+    async execute(args, exec) {
       const input: MemoryPutInput = {
         kind: args.kind,
         title: args.title,
@@ -57,7 +57,8 @@ export function apply(ctx: Context): void {
         workspacePath: exec.agent?.session.header.cwd ?? null,
         sourceSessionId: exec.agent?.id ?? 'user',
       }
-      return ctx.memory.put(input)
+      const record = await ctx.memory.put(input)
+      return JSON.stringify(record)
     },
     presentCall(args) {
       return { card: 'generic', title: 'Remember', kind: 'other', rawInput: args.title }
@@ -75,13 +76,13 @@ export function apply(ctx: Context): void {
     },
     output: TEXT_OUTPUT,
     execute(args, exec) {
-      return ctx.memory.search({
+      return JSON.stringify(ctx.memory.search({
         q: args.query,
         limit: args.limit,
         kind: args.kind,
         scope: args.scope ?? 'current',
         workspacePath: exec.agent?.session.header.cwd ?? undefined,
-      })
+      }))
     },
     presentCall(args) {
       return { card: 'generic', title: 'Search memory', kind: 'search', rawInput: args.query }
@@ -96,7 +97,7 @@ export function apply(ctx: Context): void {
     },
     output: TEXT_OUTPUT,
     execute(args) {
-      return ctx.memory.get(args.id) ?? null
+      return JSON.stringify(ctx.memory.get(args.id) ?? null)
     },
     presentCall(args) {
       return { card: 'generic', title: 'Read memory', kind: 'read', rawInput: args.id }
@@ -125,7 +126,7 @@ export function apply(ctx: Context): void {
       if (args.scope !== undefined) patch.scope = args.scope
       if (args.importance !== undefined) patch.importance = args.importance
       if (args.status !== undefined) patch.status = args.status
-      return ctx.memory.update(args.id, patch)
+      return ctx.memory.update(args.id, patch).then(record => JSON.stringify(record))
     },
     presentCall(args) {
       return { card: 'generic', title: 'Update memory', kind: 'other', rawInput: args.id }
@@ -141,7 +142,7 @@ export function apply(ctx: Context): void {
     output: TEXT_OUTPUT,
     execute(args, exec) {
       requireDirectHuman(ctx, exec)
-      return ctx.memory.delete(args.id)
+      return ctx.memory.delete(args.id).then(deleted => JSON.stringify(deleted))
     },
     presentCall(args) {
       return { card: 'generic', title: 'Forget memory', kind: 'other', rawInput: args.id }
