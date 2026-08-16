@@ -131,6 +131,10 @@ export class MemoryService extends Service {
     return this.core.stats()
   }
 
+  tags(): { tag: string; count: number }[] {
+    return this.core.allTags()
+  }
+
   subscribe(listener: (change: HippomemoChanged) => void): () => void {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }

@@ -35,10 +35,17 @@ function queryString(query: MemoryListQuery = {}): string {
   if (query.status !== undefined) params.set('status', query.status)
   if (query.tag !== undefined) params.set('tag', query.tag)
   if (query.workspacePath !== undefined) params.set('workspacePath', query.workspacePath)
+  if (query.sort !== undefined) params.set('sort', query.sort)
+  if (query.order !== undefined) params.set('order', query.order)
   if (query.limit !== undefined) params.set('limit', String(query.limit))
   if (query.cursor !== undefined) params.set('cursor', String(query.cursor))
   const value = params.toString()
   return value.length > 0 ? '?' + value : ''
+}
+
+export interface MemoryTagCount {
+  tag: string
+  count: number
 }
 
 export interface HippomemoApi {
@@ -48,6 +55,7 @@ export interface HippomemoApi {
   update(id: string, patch: MemoryPatchInput): Promise<MemoryRecord>
   remove(id: string): Promise<boolean>
   stats(): Promise<MemoryStats>
+  tags(): Promise<MemoryTagCount[]>
   events(onChange: (event: { operation: string; id: string }) => void): () => void
 }
 
@@ -65,6 +73,7 @@ export function createHippomemoApi(): HippomemoApi {
     }),
     remove: id => request<boolean>('/hippomemo/records/' + encodeURIComponent(id), { method: 'DELETE' }),
     stats: () => request<MemoryStats>('/hippomemo/stats'),
+    tags: () => request<MemoryTagCount[]>('/hippomemo/tags'),
     events: (onChange) => {
       const source = new EventSource('/hippomemo/events')
       source.onmessage = (event) => {

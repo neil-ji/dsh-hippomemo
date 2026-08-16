@@ -192,6 +192,49 @@ test('core tolerates legacy records without tags', () => {
   assert.equal(core.search({ q: 'legacy' }).total, 1)
 })
 
+test('core list paginates with limit/cursor/nextCursor', () => {
+  const core = makeCore()
+  for (let index = 1; index <= 5; index += 1) {
+    core.put(input('Item ' + index, 'body ' + index))
+  }
+  const first = core.list({ limit: 2 })
+  assert.equal(first.total, 5)
+  assert.equal(first.items.length, 2)
+  assert.equal(first.nextCursor, 2)
+  const second = core.list({ limit: 2, cursor: first.nextCursor })
+  assert.equal(second.items.length, 2)
+  assert.equal(second.nextCursor, 4)
+  const third = core.list({ limit: 2, cursor: second.nextCursor as number })
+  assert.equal(third.items.length, 1)
+  assert.equal(third.nextCursor, undefined)
+})
+
+test('core list sorts by key and direction', () => {
+  const core = makeCore()
+  core.put(input('Beta', 'b', { importance: 0.3 }))
+  core.put(input('Alpha', 'a', { importance: 0.9 }))
+  core.put(input('Gamma', 'g', { importance: 0.5 }))
+
+  assert.deepEqual(core.list({ sort: 'updatedAt', order: 'desc' }).items.map(r => r.title), ['Gamma', 'Alpha', 'Beta'])
+  assert.deepEqual(core.list({ sort: 'updatedAt', order: 'asc' }).items.map(r => r.title), ['Beta', 'Alpha', 'Gamma'])
+  assert.deepEqual(core.list({ sort: 'importance', order: 'desc' }).items.map(r => r.title), ['Alpha', 'Gamma', 'Beta'])
+  assert.deepEqual(core.list({ sort: 'importance', order: 'asc' }).items.map(r => r.title), ['Beta', 'Gamma', 'Alpha'])
+  assert.deepEqual(core.list({ sort: 'title', order: 'asc' }).items.map(r => r.title), ['Alpha', 'Beta', 'Gamma'])
+  assert.deepEqual(core.list({ sort: 'title', order: 'desc' }).items.map(r => r.title), ['Gamma', 'Beta', 'Alpha'])
+})
+
+test('core allTags counts and orders by usage', () => {
+  const core = makeCore()
+  core.put(input('A', 'one', { tags: ['red', 'blue'] }))
+  core.put(input('B', 'two', { tags: ['red'] }))
+  core.put(input('C', 'three', { tags: ['green', 'red'] }))
+  assert.deepEqual(core.allTags(), [
+    { tag: 'red', count: 3 },
+    { tag: 'blue', count: 1 },
+    { tag: 'green', count: 1 },
+  ])
+})
+
 test('core load rebuilds index from durable records', () => {
   const core = makeCore()
   const record: MemoryRecord = {

@@ -15,6 +15,7 @@ HippoMemo persists records in the dsh home, not inside any session or workspace.
 - Revisioned, provenance-carrying memory records with active / archived / superseded / candidate statuses.
 - Live settings-page refresh through a same-origin SSE stream.
 - A "Memory" item in the Web settings modal for browsing, searching, editing, archiving, and deleting all memories.
+- Full settings-page UX: debounced full-text search, kind / scope / status / tag filters, sort by recency, creation time, importance, or title (ascending/descending), server-side pagination with page-size control, long-text clamping on cards, and a detail view (full content, tags, provenance, related memories) with back navigation.
 
 ## Install
 

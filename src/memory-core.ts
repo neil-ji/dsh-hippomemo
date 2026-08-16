@@ -5,7 +5,7 @@
 import type {
   MemoryAuthor, MemoryId, MemoryKind, MemoryListQuery, MemoryListResult,
   MemoryPatchInput, MemoryPutInput, MemoryRecord, MemoryScope, MemorySearchHit,
-  MemorySearchResult, MemoryStats, MemoryStatus,
+  MemorySearchResult, MemorySortKey, MemorySortOrder, MemoryStats, MemoryStatus,
 } from './types.ts'
 
 export interface MemoryCoreConfig {
@@ -62,6 +62,25 @@ function clampImportance(value: number): number {
 
 function sortByUpdated(left: MemoryRecord, right: MemoryRecord): number {
   return right.updatedAt - left.updatedAt
+}
+
+function compareByKey(left: MemoryRecord, right: MemoryRecord, key: MemorySortKey): number {
+  if (key === 'title') return left.title.localeCompare(right.title, undefined, { sensitivity: 'base' })
+  return (left[key] as number) - (right[key] as number)
+}
+
+/** Stable sort by key, then updatedAt desc as a deterministic tiebreak. */
+export function sortRecords(records: MemoryRecord[], key: MemorySortKey = 'updatedAt', order: MemorySortOrder = 'desc'): MemoryRecord[] {
+  const direction = order === 'asc' ? 1 : -1
+  const sorted = [...records]
+  sorted.sort((left, right) => {
+    const byKey = compareByKey(left, right, key) * direction
+    if (byKey !== 0) return byKey
+    const byUpdated = sortByUpdated(left, right)
+    if (key !== 'updatedAt' && byUpdated !== 0) return byUpdated
+    return left.id.localeCompare(right.id)
+  })
+  return sorted
 }
 
 export interface NormalizeResult {
@@ -142,11 +161,23 @@ export class MemoryCore {
   list(query: MemoryListQuery = {}): MemoryListResult {
     const limit = query.limit ?? 50
     const cursor = query.cursor ?? 0
-    const filtered = this.filter(query).sort(sortByUpdated)
+    const filtered = sortRecords(this.filter(query), query.sort, query.order)
     const total = filtered.length
     const items = filtered.slice(cursor, cursor + limit)
     const nextCursor = cursor + items.length < total ? cursor + items.length : undefined
     return { items, total, ...(nextCursor === undefined ? {} : { nextCursor }) }
+  }
+
+  /** All distinct tags with usage counts, most-used first (name tiebreak). */
+  allTags(): { tag: string; count: number }[] {
+    const counts = new Map<string, number>()
+    for (const record of this.records.values()) {
+      if (Array.isArray(record.tags) === false) continue
+      for (const tag of record.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag))
   }
 
   search(query: MemoryListQuery = {}): MemorySearchResult {
@@ -236,7 +267,8 @@ export class MemoryCore {
     let records = [...this.records.values()]
     if (query.kind !== undefined) records = records.filter(record => record.kind === query.kind)
     if (query.status !== undefined) records = records.filter(record => record.status === query.status)
-    if (query.tag !== undefined) records = records.filter(record => record.tags.includes(query.tag))
+    const tag = query.tag
+    if (tag !== undefined) records = records.filter(record => record.tags.includes(tag))
     if (query.scope === 'current') {
       records = records.filter(record =>
         record.scope === 'global' || (query.workspacePath !== undefined && record.workspacePath === query.workspacePath))

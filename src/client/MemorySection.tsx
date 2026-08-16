@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { IconChevronDownOutline14, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { HippomemoApi } from './api.ts'
+import {
+  Button, IconArchiveOutline20, IconChevronDownOutline14, IconChevronLeftOutline14,
+  IconChevronRightOutline14, IconChevronUpOutline14, IconCloseOutline16,
+  IconEditOutline16, IconPlusOutline16, IconSearchOutline16, IconTrashOutline16,
+  Menu, Pill,
+} from '@deepseek-ai/dsh-client-ui-primitives'
+import type { HippomemoApi, MemoryTagCount } from './api.ts'
 import type { HippomemoLocaleKey } from './locales.ts'
-import type { MemoryKind, MemoryPatchInput, MemoryPutInput, MemoryRecord, MemoryScope, MemoryStats, MemoryStatus } from '../types.ts'
+import type {
+  MemoryKind, MemoryListQuery, MemoryPatchInput, MemoryPutInput, MemoryRecord,
+  MemoryScope, MemorySortKey, MemorySortOrder, MemoryStats, MemoryStatus,
+} from '../types.ts'
 
 type Translate = (key: HippomemoLocaleKey) => string
 
@@ -14,6 +22,13 @@ export interface MemorySectionProps {
 const KINDS: MemoryKind[] = ['insight', 'decision', 'fact', 'preference', 'constraint']
 const SCOPES: MemoryScope[] = ['global', 'workspace', 'project']
 const STATUSES: MemoryStatus[] = ['active', 'archived', 'superseded', 'candidate']
+const SORTS: { value: MemorySortKey; label: HippomemoLocaleKey }[] = [
+  { value: 'updatedAt', label: 'sortUpdatedAt' },
+  { value: 'createdAt', label: 'sortCreatedAt' },
+  { value: 'importance', label: 'sortImportance' },
+  { value: 'title', label: 'sortTitle' },
+]
+const PAGE_SIZES = [10, 20, 50]
 
 interface SelectOption {
   value: string
@@ -68,32 +83,86 @@ function HippomemoSelect({ value, placeholder, options, onChange }: {
   )
 }
 
+function formatDate(value: number): string {
+  return new Date(value).toLocaleString()
+}
+
+type PageItem = number | 'gap'
+
+function pageItems(page: number, totalPages: number): PageItem[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1)
+  }
+  const start = Math.max(2, Math.min(page - 1, totalPages - 4))
+  const end = Math.min(start + 3, totalPages - 1)
+  const items: PageItem[] = [1]
+  if (start > 2) items.push('gap')
+  for (let n = start; n <= end; n += 1) items.push(n)
+  if (end < totalPages - 1) items.push('gap')
+  items.push(totalPages)
+  return items
+}
+
 export function MemorySection({ api, t }: MemorySectionProps): ReactNode {
   const [q, setQ] = useState('')
+  const [debouncedQ, setDebouncedQ] = useState('')
   const [kind, setKind] = useState('')
   const [scope, setScope] = useState('')
   const [status, setStatus] = useState('')
+  const [tag, setTag] = useState('')
+  const [sort, setSort] = useState<MemorySortKey>('updatedAt')
+  const [order, setOrder] = useState<MemorySortOrder>('desc')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+
   const [records, setRecords] = useState<MemoryRecord[]>([])
+  const [total, setTotal] = useState(0)
   const [stats, setStats] = useState<MemoryStats | null>(null)
+  const [tags, setTags] = useState<MemoryTagCount[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  const [detailId, setDetailId] = useState<string | null>(null)
   const [editing, setEditing] = useState<MemoryRecord | 'new' | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+
+  // Debounced search: typing only refetches after a short pause.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQ(q)
+      setPage(1)
+    }, 250)
+    return () => { clearTimeout(timer) }
+  }, [q])
+
+  const changeKind = (value: string): void => { setKind(value); setPage(1) }
+  const changeScope = (value: string): void => { setScope(value); setPage(1) }
+  const changeStatus = (value: string): void => { setStatus(value); setPage(1) }
+  const changeTag = (value: string): void => { setTag(value); setPage(1) }
+  const changeSort = (value: string): void => { setSort(value as MemorySortKey); setPage(1) }
+  const changePageSize = (value: string): void => { setPageSize(Number(value)); setPage(1) }
+  const toggleOrder = (): void => { setOrder(prev => prev === 'desc' ? 'asc' : 'desc'); setPage(1) }
 
   useEffect(() => {
     let current = true
     setLoading(true)
     setError('')
-    const query = {
-      ...(q.length > 0 ? { q } : {}),
+    const query: MemoryListQuery = {
+      ...(debouncedQ.length > 0 ? { q: debouncedQ } : {}),
       ...(kind.length > 0 ? { kind: kind as MemoryKind } : {}),
       ...(scope.length > 0 ? { scope: scope as MemoryScope } : {}),
       ...(status.length > 0 ? { status: status as MemoryStatus } : {}),
+      ...(tag.length > 0 ? { tag } : {}),
+      sort,
+      order,
+      limit: pageSize,
+      cursor: (page - 1) * pageSize,
     }
     void Promise.all([api.list(query), api.stats()])
       .then(([list, nextStats]) => {
         if (current === false) return
         setRecords(list.items)
+        setTotal(list.total)
         setStats(nextStats)
       })
       .catch((cause: unknown) => {
@@ -105,7 +174,15 @@ export function MemorySection({ api, t }: MemorySectionProps): ReactNode {
         setLoading(false)
       })
     return () => { current = false }
-  }, [api, q, kind, scope, status, reloadKey])
+  }, [api, debouncedQ, kind, scope, status, tag, sort, order, page, pageSize, reloadKey])
+
+  useEffect(() => {
+    let current = true
+    void api.tags()
+      .then(nextTags => { if (current) setTags(nextTags) })
+      .catch(() => { /* tags are auxiliary; keep whatever we had */ })
+    return () => { current = false }
+  }, [api, reloadKey])
 
   const reload = (): void => {
     setReloadKey(prev => prev + 1)
@@ -115,6 +192,12 @@ export function MemorySection({ api, t }: MemorySectionProps): ReactNode {
     const close = api.events(() => { reload() })
     return close
   }, [api])
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  // Keep the cursor in range after deletions shrink the result set.
+  useEffect(() => {
+    if (page > 1 && total > 0 && page > totalPages) setPage(totalPages)
+  }, [page, total, totalPages])
 
   const save = async (input: MemoryPutInput | MemoryPatchInput, id?: string): Promise<void> => {
     if (id === undefined) await api.create(input as MemoryPutInput)
@@ -126,6 +209,7 @@ export function MemorySection({ api, t }: MemorySectionProps): ReactNode {
   const remove = async (id: string): Promise<void> => {
     if (window.confirm(t('confirmDelete')) === false) return
     await api.remove(id)
+    if (detailId === id) setDetailId(null)
     reload()
   }
 
@@ -134,95 +218,361 @@ export function MemorySection({ api, t }: MemorySectionProps): ReactNode {
     reload()
   }
 
+  const openDetail = (id: string): void => {
+    setEditing(null)
+    setDetailId(id)
+  }
+
+  const hasFilters = q.length > 0 || kind.length > 0 || scope.length > 0 || status.length > 0 || tag.length > 0
+
   return (
     <div className="hippomemo-section" data-plugin="dsh-hippomemo">
       <h2 className="hippomemo-title">{t('title')}</h2>
       <p className="hippomemo-intro">{t('intro')}</p>
 
-      <div className="hippomemo-toolbar">
-        <input
-          className="hippomemo-search"
-          value={q}
-          placeholder={t('searchPlaceholder')}
-          onChange={event => { setQ(event.currentTarget.value) }}
-        />
-        <HippomemoSelect
-          value={kind}
-          placeholder={t('allKinds')}
-          options={[{ value: '', label: t('allKinds') }, ...KINDS.map(value => ({ value, label: t(value) }))]}
-          onChange={setKind}
-        />
-        <HippomemoSelect
-          value={scope}
-          placeholder={t('allScopes')}
-          options={[{ value: '', label: t('allScopes') }, ...SCOPES.map(value => ({ value, label: t(value) }))]}
-          onChange={setScope}
-        />
-        <HippomemoSelect
-          value={status}
-          placeholder={t('allStatuses')}
-          options={[{ value: '', label: t('allStatuses') }, ...STATUSES.map(value => ({ value, label: t(value) }))]}
-          onChange={setStatus}
-        />
-        <button type="button" className="hippomemo-button" onClick={() => { setEditing('new') }}>
-          {t('newMemory')}
-        </button>
+      {detailId !== null ? (
+        editing !== null && editing !== 'new' && editing.id === detailId ? (
+          <MemoryEditor
+            t={t}
+            initial={editing}
+            onCancel={() => { setEditing(null) }}
+            onSave={save}
+          />
+        ) : (
+          <MemoryDetail
+            api={api}
+            t={t}
+            id={detailId}
+            refreshKey={reloadKey}
+            onBack={() => { setEditing(null); setDetailId(null) }}
+            onEdit={setEditing}
+            onChanged={reload}
+            onDeleted={(id) => { if (detailId === id) setDetailId(null); reload() }}
+            onOpenRelated={openDetail}
+          />
+        )
+      ) : (
+        <>
+          <div className="hippomemo-toolbar">
+            <div className="hippomemo-search-wrap">
+              <span className="hippomemo-search-icon" aria-hidden="true"><IconSearchOutline16 /></span>
+              <input
+                className="hippomemo-search"
+                value={q}
+                placeholder={t('searchPlaceholder')}
+                onChange={event => { setQ(event.currentTarget.value) }}
+              />
+              {q.length > 0 ? (
+                <button type="button" className="hippomemo-search-clear" aria-label={t('clearSearch')} onClick={() => { setQ('') }}>
+                  <IconCloseOutline16 />
+                </button>
+              ) : null}
+            </div>
+            <HippomemoSelect
+              value={kind}
+              placeholder={t('allKinds')}
+              options={[{ value: '', label: t('allKinds') }, ...KINDS.map(value => ({ value, label: t(value) }))]}
+              onChange={changeKind}
+            />
+            <HippomemoSelect
+              value={scope}
+              placeholder={t('allScopes')}
+              options={[{ value: '', label: t('allScopes') }, ...SCOPES.map(value => ({ value, label: t(value) }))]}
+              onChange={changeScope}
+            />
+            <HippomemoSelect
+              value={status}
+              placeholder={t('allStatuses')}
+              options={[{ value: '', label: t('allStatuses') }, ...STATUSES.map(value => ({ value, label: t(value) }))]}
+              onChange={changeStatus}
+            />
+            {tags.length > 0 ? (
+              <HippomemoSelect
+                value={tag}
+                placeholder={t('allTags')}
+                options={[
+                  { value: '', label: t('allTags') },
+                  ...tags.map(item => ({ value: item.tag, label: item.tag + ' (' + String(item.count) + ')' })),
+                ]}
+                onChange={changeTag}
+              />
+            ) : null}
+            <HippomemoSelect
+              value={sort}
+              placeholder={t('sortLabel')}
+              options={SORTS.map(option => ({ value: option.value, label: t(option.label) }))}
+              onChange={changeSort}
+            />
+            <button
+              type="button"
+              className="hippomemo-order"
+              title={order === 'desc' ? t('orderDesc') : t('orderAsc')}
+              aria-label={order === 'desc' ? t('orderDesc') : t('orderAsc')}
+              onClick={toggleOrder}
+            >
+              {order === 'desc' ? <IconChevronDownOutline14 /> : <IconChevronUpOutline14 />}
+            </button>
+            <Button variant="primary" size="md" icon={<IconPlusOutline16 />} onClick={() => { setEditing('new') }}>
+              {t('newMemory')}
+            </Button>
+          </div>
+
+          {stats !== null ? (
+            <div className="hippomemo-meta">
+              <span>{t('total')} {stats.total} {t('results')}</span>
+              <span>{t('activeCount')} {stats.active}</span>
+              <span>{t('archivedCount')} {stats.archived}</span>
+            </div>
+          ) : null}
+
+          {loading ? <p className="hippomemo-status">{t('loading')}</p> : null}
+          {error.length > 0 && loading === false ? (
+            <p className="hippomemo-error">
+              {t('loadFailed')}: {error}
+              <button type="button" className="hippomemo-retry" onClick={reload}>{t('retry')}</button>
+            </p>
+          ) : null}
+
+          {editing !== null ? (
+            <MemoryEditor
+              t={t}
+              initial={editing === 'new' ? undefined : editing}
+              onCancel={() => { setEditing(null) }}
+              onSave={save}
+            />
+          ) : null}
+
+          {loading === false && error.length === 0 && records.length === 0 ? (
+            <p className="hippomemo-empty">{hasFilters ? t('emptySearch') : t('empty')}</p>
+          ) : null}
+
+          {records.length > 0 ? (
+            <div className="hippomemo-list">
+              {records.map(record => (
+                <div className="hippomemo-card" key={record.id}>
+                  <button type="button" className="hippomemo-card-main" onClick={() => { openDetail(record.id) }}>
+                    <div className="hippomemo-card-head">
+                      <span className="hippomemo-card-title">{record.title}</span>
+                      <Pill className={'hippomemo-kind-pill hippomemo-kind-' + record.kind}>{t(record.kind)}</Pill>
+                    </div>
+                    <p className="hippomemo-content hippomemo-clamp">{record.content}</p>
+                    <div className="hippomemo-meta">
+                      <span>{t(record.scope)}</span>
+                      <span>{t(record.status)}</span>
+                      <span>{t('importanceLabel')}: {record.importance.toFixed(2)}</span>
+                      <span>{formatDate(record.updatedAt)}</span>
+                    </div>
+                  </button>
+                  <div className="hippomemo-card-actions">
+                    <Button size="sm" variant="ghost" icon={<IconEditOutline16 />} onClick={() => { setEditing(record) }}>
+                      {t('edit')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => { void setStatusFor(record, record.status === 'archived' ? 'active' : 'archived') }}
+                    >
+                      {record.status === 'archived' ? t('restore') : t('archive')}
+                    </Button>
+                    <Button size="sm" variant="ghost" className="hippomemo-button-danger" icon={<IconTrashOutline16 />} onClick={() => { void remove(record.id) }}>
+                      {t('delete')}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {total > 0 ? (
+            <div className="hippomemo-pager">
+              <span className="hippomemo-pager-meta">
+                {t('total')} {total} {t('results')} · {t('pagePrefix')} {page} / {totalPages} {t('pageSuffix')}
+              </span>
+              <div className="hippomemo-pager-controls">
+                <HippomemoSelect
+                  value={String(pageSize)}
+                  placeholder={t('pageSizeLabel')}
+                  options={PAGE_SIZES.map(size => ({ value: String(size), label: t('pageSizeLabel') + ' ' + String(size) }))}
+                  onChange={changePageSize}
+                />
+                <button
+                  type="button"
+                  className="hippomemo-pager-btn"
+                  disabled={page <= 1}
+                  onClick={() => { setPage(page - 1) }}
+                >
+                  <IconChevronLeftOutline14 /> {t('prevPage')}
+                </button>
+                {pageItems(page, totalPages).map((item, index) => (
+                  item === 'gap' ? (
+                    <span key={'gap-' + String(index)} className="hippomemo-pager-gap">…</span>
+                  ) : (
+                    <button
+                      key={item}
+                      type="button"
+                      className={item === page ? 'hippomemo-pager-btn hippomemo-pager-active' : 'hippomemo-pager-btn'}
+                      aria-current={item === page ? 'page' : undefined}
+                      onClick={() => { setPage(item) }}
+                    >
+                      {item}
+                    </button>
+                  )
+                ))}
+                <button
+                  type="button"
+                  className="hippomemo-pager-btn"
+                  disabled={page >= totalPages}
+                  onClick={() => { setPage(page + 1) }}
+                >
+                  {t('nextPage')} <IconChevronRightOutline14 />
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  )
+}
+
+interface DetailProps {
+  api: HippomemoApi
+  t: Translate
+  id: string
+  refreshKey: number
+  onBack: () => void
+  onEdit: (record: MemoryRecord) => void
+  onChanged: () => void
+  onDeleted: (id: string) => void
+  onOpenRelated: (id: string) => void
+}
+
+function MemoryDetail({ api, t, id, refreshKey, onBack, onEdit, onChanged, onDeleted, onOpenRelated }: DetailProps): ReactNode {
+  const [record, setRecord] = useState<MemoryRecord | null>(null)
+  const [related, setRelated] = useState<MemoryRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let current = true
+    setLoading(true)
+    setError('')
+    void api.get(id)
+      .then(found => {
+        if (current === false) return
+        setRecord(found)
+        setRelated([])
+        if (found === null) return
+        const relatedIds = (found.relatedIds ?? []).slice(0, 6)
+        if (relatedIds.length === 0) return
+        void Promise.all(relatedIds.map(relatedId => api.get(relatedId)))
+          .then(foundRelated => {
+            if (current === false) return
+            setRelated(foundRelated.filter((item): item is MemoryRecord => item !== null))
+          })
+          .catch(() => { /* related list is auxiliary */ })
+      })
+      .catch((cause: unknown) => {
+        if (current === false) return
+        setError(cause instanceof Error ? cause.message : String(cause))
+      })
+      .finally(() => {
+        if (current === false) return
+        setLoading(false)
+      })
+    return () => { current = false }
+  }, [api, id, refreshKey])
+
+  if (loading) return <p className="hippomemo-status">{t('loading')}</p>
+  if (error.length > 0) return <p className="hippomemo-error">{t('loadFailed')}: {error}</p>
+  if (record === null) return <p className="hippomemo-empty">{t('memoryNotFound')}</p>
+
+  const archiveToggle = async (): Promise<void> => {
+    await api.update(record.id, { status: record.status === 'archived' ? 'active' : 'archived' })
+    onChanged()
+  }
+
+  const remove = async (): Promise<void> => {
+    if (window.confirm(t('confirmDelete')) === false) return
+    await api.remove(record.id)
+    onDeleted(record.id)
+  }
+
+  return (
+    <div className="hippomemo-detail">
+      <div className="hippomemo-detail-nav">
+        <Button size="sm" variant="ghost" icon={<IconChevronLeftOutline14 />} onClick={onBack}>
+          {t('back')}
+        </Button>
+        <div className="hippomemo-detail-actions">
+          <Button size="sm" variant="ghost" icon={<IconEditOutline16 />} onClick={() => { onEdit(record) }}>
+            {t('edit')}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => { void archiveToggle() }}>
+            {record.status === 'archived' ? t('restore') : t('archive')}
+          </Button>
+          <Button size="sm" variant="ghost" className="hippomemo-button-danger" icon={<IconTrashOutline16 />} onClick={() => { void remove() }}>
+            {t('delete')}
+          </Button>
+        </div>
       </div>
 
-      {stats !== null ? (
-        <div className="hippomemo-meta">
-          <span>{t('total')} {stats.total}</span>
-          <span>{t('activeCount')} {stats.active}</span>
-          <span>{t('archivedCount')} {stats.archived}</span>
+      <div className="hippomemo-detail-head">
+        <h3 className="hippomemo-detail-title">{record.title}</h3>
+        <div className="hippomemo-detail-pills">
+          <Pill className={'hippomemo-kind-pill hippomemo-kind-' + record.kind}>{t(record.kind)}</Pill>
+          <Pill className="hippomemo-scope-pill">{t(record.scope)}</Pill>
+          <Pill className={'hippomemo-status-pill hippomemo-status-' + record.status}>{t(record.status)}</Pill>
+        </div>
+      </div>
+
+      <div className="hippomemo-content hippomemo-detail-content">{record.content}</div>
+
+      {record.tags.length > 0 ? (
+        <div className="hippomemo-tag-list">
+          <span className="hippomemo-tag-label">{t('tags')}</span>
+          {record.tags.map(tagItem => (
+            <Pill key={tagItem} className="hippomemo-tag-pill">#{tagItem}</Pill>
+          ))}
         </div>
       ) : null}
 
-      {loading ? <p>{t('loading')}</p> : null}
-      {error.length > 0 && loading === false ? (
-        <p className="hippomemo-error">{t('loadFailed')}: {error}</p>
-      ) : null}
+      <dl className="hippomemo-facts">
+        <div className="hippomemo-fact">
+          <dt>{t('importanceLabel')}</dt>
+          <dd>{record.importance.toFixed(2)}</dd>
+        </div>
+        <div className="hippomemo-fact">
+          <dt>{t('revisionLabel')}</dt>
+          <dd>{record.revision}</dd>
+        </div>
+        <div className="hippomemo-fact">
+          <dt>{t('sourceSession')}</dt>
+          <dd>{record.sourceSessionId}</dd>
+        </div>
+        <div className="hippomemo-fact">
+          <dt>{t('createdAt')}</dt>
+          <dd>{formatDate(record.createdAt)}</dd>
+        </div>
+        <div className="hippomemo-fact">
+          <dt>{t('updatedAt')}</dt>
+          <dd>{formatDate(record.updatedAt)}</dd>
+        </div>
+      </dl>
 
-      {loading === false && records.length === 0 ? <p>{q.length > 0 ? t('emptySearch') : t('empty')}</p> : null}
-
-      {editing !== null ? (
-        <MemoryEditor
-          t={t}
-          initial={editing === 'new' ? undefined : editing}
-          onCancel={() => { setEditing(null) }}
-          onSave={save}
-        />
-      ) : null}
-
-      <div className="hippomemo-list">
-        {records.map(record => (
-          <div className="hippomemo-card" key={record.id}>
-            <div className="hippomemo-card-head">
-              <span className="hippomemo-card-title">{record.title}</span>
-              <span className="hippomemo-meta">{t(record.kind)}</span>
-            </div>
-            <p className="hippomemo-content">{record.content}</p>
-            <div className="hippomemo-meta">
-              <span>{t('scope')}: {t(record.scope)}</span>
-              <span>{t('status')}: {t(record.status)}</span>
-              <span>{t('importanceLabel')}: {record.importance.toFixed(2)}</span>
-              <span>{t('revisionLabel')}: {record.revision}</span>
-              <span>{t('sourceSession')}: {record.sourceSessionId}</span>
-              <span>{t('updatedAt')}: {new Date(record.updatedAt).toLocaleString()}</span>
-            </div>
-            <div className="hippomemo-toolbar">
-              <button type="button" className="hippomemo-button" onClick={() => { setEditing(record) }}>{t('edit')}</button>
-              <button
-                type="button"
-                className="hippomemo-button"
-                onClick={() => { void setStatusFor(record, record.status === 'archived' ? 'active' : 'archived') }}
-              >
-                {record.status === 'archived' ? t('restore') : t('archive')}
+      {related.length > 0 ? (
+        <div className="hippomemo-related">
+          <span className="hippomemo-related-label">{t('related')}</span>
+          <div className="hippomemo-related-list">
+            {related.map(item => (
+              <button type="button" key={item.id} className="hippomemo-related-item" onClick={() => { onOpenRelated(item.id) }}>
+                <span className="hippomemo-related-title">{item.title}</span>
+                <span className="hippomemo-related-meta">{t(item.kind)} · {formatDate(item.updatedAt)}</span>
               </button>
-              <button type="button" className="hippomemo-button" onClick={() => { void remove(record.id) }}>{t('delete')}</button>
-            </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -249,7 +599,7 @@ function MemoryEditor({ t, initial, onCancel, onSave }: EditorProps): ReactNode 
       const patch: MemoryPatchInput = {
         title,
         content,
-        tags: tags.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0),
+        tags: tags.split(',').map(item => item.trim()).filter(item => item.length > 0),
         kind,
         scope,
         importance: Number(importance) || 0.5,
@@ -283,8 +633,8 @@ function MemoryEditor({ t, initial, onCancel, onSave }: EditorProps): ReactNode 
       <label>{t('contentLabel')}<textarea value={content} onChange={event => { setContent(event.currentTarget.value) }} /></label>
       <label>{t('tagsLabel')}<input value={tags} onChange={event => { setTags(event.currentTarget.value) }} /></label>
       <div className="hippomemo-toolbar">
-        <button type="button" className="hippomemo-button" disabled={saving} onClick={() => { void submit() }}>{t('save')}</button>
-        <button type="button" className="hippomemo-button" onClick={onCancel}>{t('cancel')}</button>
+        <Button variant="primary" size="md" disabled={saving} onClick={() => { void submit() }}>{t('save')}</Button>
+        <Button variant="ghost" size="md" onClick={onCancel}>{t('cancel')}</Button>
       </div>
     </div>
   )

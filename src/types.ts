@@ -38,6 +38,10 @@ export interface MemoryRecord {
   relatedIds: string[]
 }
 
+export type MemorySortKey = 'updatedAt' | 'createdAt' | 'importance' | 'title'
+
+export type MemorySortOrder = 'asc' | 'desc'
+
 export interface MemoryListQuery {
   q?: string
   kind?: MemoryKind
@@ -45,6 +49,10 @@ export interface MemoryListQuery {
   status?: MemoryStatus
   tag?: string
   workspacePath?: string
+  /** Sort key; defaults to updatedAt. */
+  sort?: MemorySortKey
+  /** Sort direction; defaults to desc. */
+  order?: MemorySortOrder
   limit?: number
   cursor?: number
 }

@@ -47,6 +47,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, service: Memory
       return
     }
 
+    if (req.method === 'GET' && sub === '/tags') {
+      send(res, 200, okEnvelope(service.tags()))
+      return
+    }
+
     if (req.method === 'GET' && sub === '/records') {
       send(res, 200, okEnvelope(service.list(listQueryFromUrl(url))))
       return
@@ -111,6 +116,10 @@ function listQueryFromUrl(url: URL): MemoryListQuery {
   if (tag !== null && tag.length > 0) query.tag = tag
   const workspacePath = url.searchParams.get('workspacePath')
   if (workspacePath !== null && workspacePath.length > 0) query.workspacePath = workspacePath
+  const sort = url.searchParams.get('sort')
+  if (sort !== null) query.sort = sort as MemoryListQuery['sort']
+  const order = url.searchParams.get('order')
+  if (order !== null) query.order = order as MemoryListQuery['order']
   const limit = url.searchParams.get('limit')
   if (limit !== null) query.limit = Number(limit)
   const cursor = url.searchParams.get('cursor')
