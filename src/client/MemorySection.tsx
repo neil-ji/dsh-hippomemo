@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Menu } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChevronDownOutline14, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HippomemoApi } from './api.ts'
 import type { HippomemoLocaleKey } from './locales.ts'
 import type { MemoryKind, MemoryPatchInput, MemoryPutInput, MemoryRecord, MemoryScope, MemoryStats, MemoryStatus } from '../types.ts'
@@ -33,9 +33,15 @@ function HippomemoSelect({ value, placeholder, options, onChange }: {
     <Menu
       open={open}
       anchor={(
-        <button type="button" className="hippomemo-select" onClick={() => { setOpen(previous => previous === false) }}>
+        <button
+          type="button"
+          className={open ? 'hippomemo-select hippomemo-select-open' : 'hippomemo-select'}
+          onClick={() => { setOpen(previous => previous === false) }}
+        >
           <span className="hippomemo-select-label">{label}</span>
-          <span className="hippomemo-select-caret" aria-hidden="true">▾</span>
+          <span className="hippomemo-select-chevron" aria-hidden="true">
+            <IconChevronDownOutline14 />
+          </span>
         </button>
       )}
       items={options.map(option => ({ id: option.value, label: option.label }))}
