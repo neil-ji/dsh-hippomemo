@@ -9,8 +9,9 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { hippomemoDomainSpec } from './spec.ts'
 import { MemoryCore, normalizeRecord } from './memory-core.ts'
 import type {
+  CitationInput, CitationListQuery, CitationListResult, CitationRecord,
   HippomemoChanged, MemoryId, MemoryListQuery, MemoryListResult, MemoryPatchInput,
-  MemoryPutInput, MemoryRecord, MemorySearchResult, MemoryStats,
+  MemoryPutInput, MemoryRecord, MemorySearchResult, MemoryStats, MemoryUsageStats,
 } from './types.ts'
 import { registerHippomemoHttpRoutes } from './http.ts'
 
@@ -64,6 +65,8 @@ export class MemoryService extends Service {
   private readonly config: ResolvedConfig
   private readonly core: MemoryCore
   private table?: KvTable<MemoryId, MemoryRecord>
+  private citationTable?: KvTable<MemoryId, CitationRecord>
+  private readonly citationLog: CitationRecord[] = []
   private readonly listeners = new Set<(change: HippomemoChanged) => void>()
 
   constructor(ctx: Context, config: HippomemoConfig = {}) {
@@ -77,6 +80,9 @@ export class MemoryService extends Service {
     this.ctx.effect(() => () => domain.close(), 'hippomemo.domainClose')
     this.table = domain.table('memories')
     this.core.load(this.table.entries())
+    this.citationTable = domain.table('citations')
+    this.citationLog.length = 0
+    for (const [, citation] of this.citationTable.entries()) this.citationLog.push(citation)
     registerHippomemoHttpRoutes(this.ctx, this)
   }
 
@@ -89,7 +95,11 @@ export class MemoryService extends Service {
   }
 
   search(query: MemoryListQuery = {}): MemorySearchResult {
-    return this.core.search(query)
+    const result = this.core.search(query)
+    if (result.items.length > 0) {
+      this.persistChanged(this.core.markRecalled(result.items.map(hit => hit.record.id)))
+    }
+    return result
   }
 
   async put(input: MemoryPutInput): Promise<MemoryRecord> {
@@ -100,6 +110,7 @@ export class MemoryService extends Service {
     }
     await this.requireTable().put(record.id, record)
     this.core.commit(record)
+    this.citeLinks(record)
     this.emit({ operation: 'put', id: record.id })
     return record
   }
@@ -115,6 +126,7 @@ export class MemoryService extends Service {
     }, previous)
     await this.requireTable().put(record.id, record)
     this.core.commit(record)
+    this.citeLinks(record)
     this.emit({ operation: 'put', id: record.id })
     return record
   }
@@ -125,6 +137,44 @@ export class MemoryService extends Service {
     const existed = this.core.delete(id)
     if (existed) this.emit({ operation: 'deleted', id })
     return existed
+  }
+
+  /**
+   * Record one reference to a memory: bumps the citation counters on the record
+   * and appends a row to the citations log. No-op when the memory does not exist.
+   */
+  async cite(input: CitationInput): Promise<CitationRecord | undefined> {
+    const record = this.core.get(input.memoryId)
+    if (record === undefined) return undefined
+    const citation: CitationRecord = {
+      id: this.newId(),
+      memoryId: input.memoryId,
+      sessionId: input.sessionId,
+      kind: input.kind,
+      ts: Date.now(),
+      ...(input.snippet !== undefined && input.snippet.trim().length > 0 ? { snippet: input.snippet.trim().slice(0, 400) } : {}),
+    }
+    await this.requireCitationTable().put(citation.id, citation)
+    this.citationLog.push(citation)
+    const changed = this.core.markCited(input.memoryId, citation.ts)
+    if (changed !== undefined) await this.requireTable().put(changed.id, changed)
+    return citation
+  }
+
+  citations(query: CitationListQuery = {}): CitationListResult {
+    const limit = query.limit ?? 50
+    const cursor = query.cursor ?? 0
+    const filtered = this.citationLog
+      .filter(citation => query.memoryId === undefined || citation.memoryId === query.memoryId)
+      .filter(citation => query.kind === undefined || citation.kind === query.kind)
+      .sort((left, right) => right.ts - left.ts)
+    const items = filtered.slice(cursor, cursor + limit)
+    const nextCursor = cursor + items.length < filtered.length ? cursor + items.length : undefined
+    return { items, total: filtered.length, ...(nextCursor === undefined ? {} : { nextCursor }) }
+  }
+
+  usage(): MemoryUsageStats {
+    return this.core.usage()
   }
 
   stats(): MemoryStats {
@@ -140,9 +190,42 @@ export class MemoryService extends Service {
     return () => { this.listeners.delete(listener) }
   }
 
+  /** Fire-and-forget persistence of counter bumps (search hits); failures only downgrade analytics. */
+  private persistChanged(records: MemoryRecord[]): void {
+    for (const record of records) {
+      this.requireTable().put(record.id, record).catch(error => {
+        this.ctx.logger.warn('hippomemo: recall counter persist failed: ' + String(error))
+      })
+    }
+  }
+
+  /** Record a hard 'link' citation for every existing memory referenced by this record. */
+  private citeLinks(record: MemoryRecord): void {
+    const references = [...(record.relatedIds ?? []), ...(record.supersedes === undefined || record.supersedes === null ? [] : [record.supersedes])]
+    const seen = new Set<MemoryId>()
+    for (const reference of references) {
+      if (reference === record.id || seen.has(reference)) continue
+      seen.add(reference)
+      if (this.core.get(reference) === undefined) continue
+      void this.cite({ memoryId: reference, sessionId: record.sourceSessionId, kind: 'link' }).catch(error => {
+        this.ctx.logger.warn('hippomemo: link citation failed: ' + String(error))
+      })
+    }
+  }
+
+  private newId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+    return 'cit-' + Math.random().toString(36).slice(2) + '-' + Date.now().toString(36)
+  }
+
   private requireTable(): KvTable<MemoryId, MemoryRecord> {
     if (this.table === undefined) throw new Error('hippomemo: domain is not open')
     return this.table
+  }
+
+  private requireCitationTable(): KvTable<MemoryId, CitationRecord> {
+    if (this.citationTable === undefined) throw new Error('hippomemo: domain is not open')
+    return this.citationTable
   }
 
   private emit(change: HippomemoChanged): void {

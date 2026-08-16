@@ -1,8 +1,8 @@
 /** Tiny fetch wrapper for the plugin-owned /hippomemo API. */
 
 import type {
-  MemoryListQuery, MemoryListResult, MemoryPatchInput, MemoryPutInput,
-  MemoryRecord, MemoryStats,
+  CitationListQuery, CitationListResult, MemoryListQuery, MemoryListResult,
+  MemoryPatchInput, MemoryPutInput, MemoryRecord, MemoryStats, MemoryUsageStats,
 } from '../types.ts'
 
 interface Envelope {
@@ -48,6 +48,16 @@ export interface MemoryTagCount {
   count: number
 }
 
+function citationQueryString(query: CitationListQuery = {}): string {
+  const params = new URLSearchParams()
+  if (query.memoryId !== undefined) params.set('memoryId', query.memoryId)
+  if (query.kind !== undefined) params.set('kind', query.kind)
+  if (query.limit !== undefined) params.set('limit', String(query.limit))
+  if (query.cursor !== undefined) params.set('cursor', String(query.cursor))
+  const value = params.toString()
+  return value.length > 0 ? '?' + value : ''
+}
+
 export interface HippomemoApi {
   list(query?: MemoryListQuery): Promise<MemoryListResult>
   get(id: string): Promise<MemoryRecord | null>
@@ -56,6 +66,8 @@ export interface HippomemoApi {
   remove(id: string): Promise<boolean>
   stats(): Promise<MemoryStats>
   tags(): Promise<MemoryTagCount[]>
+  usage(): Promise<MemoryUsageStats>
+  citations(query?: CitationListQuery): Promise<CitationListResult>
   events(onChange: (event: { operation: string; id: string }) => void): () => void
 }
 
@@ -74,6 +86,8 @@ export function createHippomemoApi(): HippomemoApi {
     remove: id => request<boolean>('/hippomemo/records/' + encodeURIComponent(id), { method: 'DELETE' }),
     stats: () => request<MemoryStats>('/hippomemo/stats'),
     tags: () => request<MemoryTagCount[]>('/hippomemo/tags'),
+    usage: () => request<MemoryUsageStats>('/hippomemo/usage'),
+    citations: query => request<CitationListResult>('/hippomemo/citations' + citationQueryString(query)),
     events: (onChange) => {
       const source = new EventSource('/hippomemo/events')
       source.onmessage = (event) => {

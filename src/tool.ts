@@ -90,6 +90,19 @@ export function apply(ctx: Context): void {
   }))
 
   ctx.tools.register(defineTool({
+    name: 'memory_usage',
+    description: 'Report HippoMemo usage analytics: how many memories were recalled (exposed to the agent), how many were actually cited (id mention or link), staleness, and the recall-to-citation conversion rate.',
+    parameters: {},
+    output: TEXT_OUTPUT,
+    async execute() {
+      return JSON.stringify(ctx.memory.usage())
+    },
+    presentCall() {
+      return { card: 'generic', title: 'Memory usage', kind: 'other', rawInput: 'usage report' }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'memory_get',
     description: 'Read one exact memory record by id.',
     parameters: {

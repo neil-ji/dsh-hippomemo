@@ -1,12 +1,13 @@
 /**
  * HippoMemo automatic recall: inject relevant memories into the first step of
- * a human turn, once per agent session.
+ * a human turn, once per agent session, and record an id-ref citation when the
+ * agent actually mentions an injected memory id in its output.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { AssistantMessage, UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from './memory-service.ts'
 import type { MemoryRecord } from './types.ts'
 
@@ -22,6 +23,27 @@ export const Config = z.object({
   recallLimit: z.number().step(1).min(1).default(5),
   maxRecallChars: z.number().step(1).min(1).default(8_000),
 })
+
+/** Per-session ids exposed by automatic recall; used to detect id mentions in agent output. */
+const exposedBySession = new Map<string, Set<string>>()
+
+function trackExposure(sessionId: string, ids: readonly string[]): void {
+  if (ids.length === 0) return
+  let exposed = exposedBySession.get(sessionId)
+  if (exposed === undefined) {
+    exposed = new Set()
+    exposedBySession.set(sessionId, exposed)
+  }
+  for (const id of ids) exposed.add(id)
+}
+
+function assistantText(message: AssistantMessage): string {
+  const parts: string[] = []
+  for (const block of message.content) {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.length > 0) parts.push(block.text)
+  }
+  return parts.join('\n')
+}
 
 export function apply(ctx: Context, config: HippomemoContextConfig = {}): void {
   const recallLimit = config.recallLimit ?? 5
@@ -49,7 +71,34 @@ export function apply(ctx: Context, config: HippomemoContextConfig = {}): void {
     const recall = renderRecallMessage(query, result.items.map(hit => ({ record: hit.record, reason: hit.matchedReason })), maxRecallChars)
     if (recall === undefined) return decision
 
+    // Track exactly the ids that were injected (renderRecallMessage may drop some on the byte budget).
+    const injectedIds = (recall.source as { memoryIds?: string[] }).memoryIds
+    if (injectedIds !== undefined) trackExposure(agent.session.id, injectedIds)
+
     return { kind: 'enter', messages: [...decision.messages, recall] }
+  })
+
+  // Citation scan: when the agent's reply mentions an exposed memory id, record an id-ref citation.
+  ctx.on('session/event', (session, event) => {
+    if (event.type !== 'assistant/message') return
+    const exposed = exposedBySession.get(session.id)
+    if (exposed === undefined || exposed.size === 0) return
+    const text = assistantText(event.data.message)
+    if (text.length === 0) return
+    for (const id of exposed) {
+      const at = text.indexOf(id)
+      if (at < 0) continue
+      const start = Math.max(0, at - 60)
+      const snippet = text.slice(start, at + id.length + 60)
+      void ctx.memory.cite({ memoryId: id, sessionId: session.id, kind: 'id-ref', snippet }).catch(error => {
+        ctx.logger.warn('hippomemo: id-ref citation failed: ' + String(error))
+      })
+    }
+  })
+
+  // Free the exposure map when the agent (and its session) leaves the registry.
+  ctx.on('agent/disposed', ({ agent }) => {
+    exposedBySession.delete(agent.session.id)
   })
 }
 

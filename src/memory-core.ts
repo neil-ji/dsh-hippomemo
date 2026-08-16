@@ -6,6 +6,7 @@ import type {
   MemoryAuthor, MemoryId, MemoryKind, MemoryListQuery, MemoryListResult,
   MemoryPatchInput, MemoryPutInput, MemoryRecord, MemoryScope, MemorySearchHit,
   MemorySearchResult, MemorySortKey, MemorySortOrder, MemoryStats, MemoryStatus,
+  MemoryUsageItem, MemoryUsageStats,
 } from './types.ts'
 
 export interface MemoryCoreConfig {
@@ -49,6 +50,15 @@ export function tokenize(value: string): string[] {
 
 export function splitTags(value: string): string[] {
   return [...new Set(value.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0))].slice(0, 32)
+}
+
+/** Fill usage counters on records that predate the analytics fields (or are otherwise partial). */
+function completeRecord(record: MemoryRecord): MemoryRecord {
+  if (record.recallCount === undefined) record.recallCount = 0
+  if (record.lastRecalledAt === undefined) record.lastRecalledAt = null
+  if (record.citationCount === undefined) record.citationCount = 0
+  if (record.lastCitedAt === undefined) record.lastCitedAt = null
+  return record
 }
 
 function recordText(record: MemoryRecord): string {
@@ -120,6 +130,10 @@ export function normalizeRecord(input: MemoryPutInput, previous?: MemoryRecord, 
     updatedAt: now,
     expiresAt: input.expiresAt === undefined ? previous?.expiresAt ?? null : input.expiresAt,
     relatedIds: [...new Set(input.relatedIds ?? previous?.relatedIds ?? [])].slice(0, 16),
+    recallCount: input.recallCount ?? previous?.recallCount ?? 0,
+    lastRecalledAt: input.lastRecalledAt === undefined ? (previous?.lastRecalledAt ?? null) : input.lastRecalledAt,
+    citationCount: input.citationCount ?? previous?.citationCount ?? 0,
+    lastCitedAt: input.lastCitedAt === undefined ? (previous?.lastCitedAt ?? null) : input.lastCitedAt,
   }
 
   return { record, revisionBumped: previous !== undefined }
@@ -144,7 +158,7 @@ export class MemoryCore {
     this.records.clear()
     this.index.clear()
     for (const item of records) {
-      const record = Array.isArray(item) ? item[1] : item
+      const record = completeRecord(Array.isArray(item) ? item[1] : item)
       this.records.set(record.id, record)
       this.indexRecord(record)
     }
@@ -245,6 +259,69 @@ export class MemoryCore {
     this.records.delete(id)
     this.removeFromIndex(id)
     return true
+  }
+
+  /** Bump exposure counters for recalled ids; returns the mutated records (persistence is the caller's job). */
+  markRecalled(ids: Iterable<MemoryId>, at: number = this.deps.now()): MemoryRecord[] {
+    const changed: MemoryRecord[] = []
+    for (const id of ids) {
+      const record = this.records.get(id)
+      if (record === undefined) continue
+      record.recallCount = (record.recallCount ?? 0) + 1
+      record.lastRecalledAt = at
+      changed.push(record)
+    }
+    return changed
+  }
+
+  /** Bump citation counters for one memory; returns the record when it exists. */
+  markCited(id: MemoryId, at: number = this.deps.now()): MemoryRecord | undefined {
+    const record = this.records.get(id)
+    if (record === undefined) return undefined
+    record.citationCount = (record.citationCount ?? 0) + 1
+    record.lastCitedAt = at
+    return record
+  }
+
+  /** Analytics over exposure vs reference, with a configurable staleness window in days. */
+  usage(stalenessDays = 30): MemoryUsageStats {
+    const now = this.deps.now()
+    const staleCutoff = now - stalenessDays * 86_400_000
+    const all = [...this.records.values()]
+    const active = all.filter(record => record.status === 'active')
+    const recalled = all.filter(record => (record.recallCount ?? 0) > 0)
+    const cited = all.filter(record => (record.citationCount ?? 0) > 0)
+    const neverRecalled = all.filter(record => (record.recallCount ?? 0) === 0)
+    const stale = active.filter(record => {
+      const last = record.lastRecalledAt
+      return last === null || last === undefined || last < staleCutoff
+    })
+    const item = (record: MemoryRecord, count: number, lastAt: number | null): MemoryUsageItem => ({
+      id: record.id,
+      title: record.title,
+      count,
+      lastAt,
+    })
+    const topBy = (records: MemoryRecord[], key: 'recallCount' | 'citationCount', lastKey: 'lastRecalledAt' | 'lastCitedAt'): MemoryUsageItem[] =>
+      [...records]
+        .sort((left, right) => (right[key] ?? 0) - (left[key] ?? 0))
+        .slice(0, 5)
+        .map(record => item(record, record[key] ?? 0, record[lastKey] ?? null))
+    const total = all.length
+    return {
+      total,
+      active: active.length,
+      recalled: recalled.length,
+      cited: cited.length,
+      neverRecalled: neverRecalled.length,
+      staleCount: stale.length,
+      recallRate: total === 0 ? 0 : recalled.length / total,
+      citationRate: total === 0 ? 0 : cited.length / total,
+      conversionRate: recalled.length === 0 ? 0 : cited.length / recalled.length,
+      topRecalled: topBy(recalled, 'recallCount', 'lastRecalledAt'),
+      topCited: topBy(cited, 'citationCount', 'lastCitedAt'),
+      stale: [...stale].sort(sortByUpdated).slice(0, 5).map(record => item(record, record.recallCount ?? 0, record.lastRecalledAt ?? null)),
+    }
   }
 
   stats(): MemoryStats {

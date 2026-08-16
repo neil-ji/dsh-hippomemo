@@ -174,6 +174,7 @@ test('core load accepts storage-domain entry tuples', () => {
     id: 'tuple-1', kind: 'fact', title: 'Tuple', content: 'entry tuple', tags: ['tuple'], scope: 'global',
     workspacePath: null, importance: 0.5, status: 'active', sourceSessionId: 's1', revision: 1,
     updatedBy: 'system', supersedes: null, supersededBy: null, createdAt: 1, updatedAt: 2, expiresAt: null, relatedIds: [],
+    recallCount: 0, lastRecalledAt: null, citationCount: 0, lastCitedAt: null,
   }
   core.load([['tuple-1', record]])
   assert.equal(core.get('tuple-1')?.title, 'Tuple')
@@ -242,8 +243,99 @@ test('core load rebuilds index from durable records', () => {
     scope: 'global', workspacePath: null, importance: 0.5, status: 'active', sourceSessionId: 's1',
     revision: 1, updatedBy: 'system', supersedes: null, supersededBy: null, createdAt: 1, updatedAt: 2,
     expiresAt: null, relatedIds: [],
+    recallCount: 0, lastRecalledAt: null, citationCount: 0, lastCitedAt: null,
   }
   core.load([record])
   assert.equal(core.get('loaded-1')?.title, 'Loaded')
   assert.equal(core.search({ q: 'durable' }).total, 1)
+})
+
+test('core markRecalled bumps recall counters and returns changed records', () => {
+  const core = makeCore()
+  const first = core.put(input('A', 'one'))
+  const second = core.put(input('B', 'two'))
+  const changed = core.markRecalled([first.id, second.id, 'missing'])
+  assert.equal(changed.length, 2)
+  assert.equal(core.get(first.id)?.recallCount, 1)
+  assert.equal(core.get(first.id)?.lastRecalledAt, 1002)
+  core.markRecalled([first.id])
+  assert.equal(core.get(first.id)?.recallCount, 2)
+  // recall must not refresh the content updatedAt
+  assert.equal(core.get(first.id)?.updatedAt, 1000)
+  assert.equal(core.get('missing'), undefined)
+})
+
+test('core markCited bumps citation counters', () => {
+  const core = makeCore()
+  const record = core.put(input('A', 'one'))
+  assert.equal(core.markCited('missing'), undefined)
+  const changed = core.markCited(record.id)
+  assert.equal(changed?.id, record.id)
+  assert.equal(core.get(record.id)?.citationCount, 1)
+  assert.equal(core.get(record.id)?.lastCitedAt, 1001)
+  core.markCited(record.id)
+  assert.equal(core.get(record.id)?.citationCount, 2)
+})
+
+test('core load fills missing counters on legacy records', () => {
+  const core = makeCore()
+  const legacy = {
+    id: 'legacy-2', kind: 'fact', title: 'Legacy', content: 'no counters', scope: 'global',
+    workspacePath: null, importance: 0.5, status: 'active', sourceSessionId: 's1', revision: 1,
+    updatedBy: 'system', supersedes: null, supersededBy: null, createdAt: 1, updatedAt: 2, expiresAt: null, relatedIds: [],
+  } as any
+  core.load([legacy])
+  assert.equal(core.get('legacy-2')?.recallCount, 0)
+  assert.equal(core.get('legacy-2')?.lastRecalledAt, null)
+  assert.equal(core.get('legacy-2')?.citationCount, 0)
+  assert.equal(core.get('legacy-2')?.lastCitedAt, null)
+})
+
+test('core usage reports rates, staleness, and rankings', () => {
+  const core = makeCore()
+  // now() returns 1000 + seq; each put advances seq
+  const recalled = core.put(input('Recalled', 'one'))
+  core.put(input('Never surfaced', 'two'))
+  const stale = core.put(input('Stale active', 'three'))
+  core.put(input('Archived old', 'four', { status: 'archived' }))
+
+  core.markRecalled([recalled.id, stale.id]) // both surfaced at seq=1004-ish
+  core.markCited([recalled.id][0])
+
+  const report = core.usage(30)
+  assert.equal(report.total, 4)
+  assert.equal(report.recalled, 2)
+  assert.equal(report.cited, 1)
+  assert.equal(report.neverRecalled, 2)
+  assert.equal(report.conversionRate, 0.5)
+  assert.equal(report.recallRate, 0.5)
+  assert.equal(report.citationRate, 0.25)
+  assert.equal(report.topRecalled.length, 2)
+  assert.equal(report.topRecalled[0].id, recalled.id)
+  assert.equal(report.topCited[0].id, recalled.id)
+  assert.equal(report.topCited[0].count, 1)
+  // a never-recalled active memory is stale under any window
+  assert.equal(report.staleCount, 1)
+  assert.equal(report.stale[0].title, 'Never surfaced')
+  // archived memories are excluded from the staleness pool
+  assert.equal(report.active, 3)
+
+  // forcing an old recall marks that memory stale under a zero window
+  const aged = core.get(stale.id)
+  assert.ok(aged !== undefined)
+  aged.lastRecalledAt = 1
+  const wide = core.usage(0)
+  assert.equal(wide.staleCount, 2)
+  assert.equal(wide.stale.some(item => item.id === stale.id), true)
+})
+
+test('core usage is empty-safe', () => {
+  const core = makeCore()
+  const report = core.usage(30)
+  assert.equal(report.total, 0)
+  assert.equal(report.recallRate, 0)
+  assert.equal(report.citationRate, 0)
+  assert.equal(report.conversionRate, 0)
+  assert.deepEqual(report.topRecalled, [])
+  assert.deepEqual(report.topCited, [])
 })

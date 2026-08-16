@@ -3,10 +3,15 @@
  *
  * The domain name doubles as the storage-json unit name, so the durable file
  * is `$DSH_HOME/storages/hippomemo.json` under the web profile defaults.
+ *
+ * Version stays 2 on purpose: the JSON backend rejects a stored version that
+ * differs from the descriptor, while a descriptor table missing from an older
+ * file is initialized empty. Adding the citations table (and new record fields
+ * with defaults) therefore migrates existing files without a version bump.
  */
 import { z } from 'zod'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
-import type { MemoryId, MemoryRecord } from './types.ts'
+import type { CitationRecord, MemoryId, MemoryRecord } from './types.ts'
 
 const memoryId = z.string().min(1).transform(value => value as MemoryId)
 
@@ -31,12 +36,26 @@ const memoryRecord = z.object({
   updatedAt: z.number(),
   expiresAt: z.number().nullable().default(null),
   relatedIds: z.array(memoryId).max(16).default([]),
+  recallCount: z.number().int().nonnegative().default(0),
+  lastRecalledAt: z.number().nullable().default(null),
+  citationCount: z.number().int().nonnegative().default(0),
+  lastCitedAt: z.number().nullable().default(null),
 }) satisfies z.ZodType<MemoryRecord>
+
+const citationRecord = z.object({
+  id: memoryId,
+  memoryId,
+  sessionId: z.string().min(1),
+  kind: z.enum(['id-ref', 'link']),
+  ts: z.number(),
+  snippet: z.string().max(400).optional(),
+}) satisfies z.ZodType<CitationRecord>
 
 export const hippomemoDomainSpec = defineDomain({
   name: 'hippomemo',
   version: 2,
   tables: {
     memories: domainTable<MemoryId, MemoryRecord>(memoryRecord),
+    citations: domainTable<MemoryId, CitationRecord>(citationRecord),
   },
 })

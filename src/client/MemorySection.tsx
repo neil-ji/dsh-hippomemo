@@ -9,7 +9,7 @@ import type { HippomemoApi, MemoryTagCount } from './api.ts'
 import type { HippomemoLocaleKey } from './locales.ts'
 import type {
   MemoryKind, MemoryListQuery, MemoryPatchInput, MemoryPutInput, MemoryRecord,
-  MemoryScope, MemorySortKey, MemorySortOrder, MemoryStats, MemoryStatus,
+  MemoryScope, MemorySortKey, MemorySortOrder, MemoryStats, MemoryStatus, MemoryUsageStats,
 } from '../types.ts'
 
 type Translate = (key: HippomemoLocaleKey) => string
@@ -118,6 +118,7 @@ export function MemorySection({ api, t }: MemorySectionProps): ReactNode {
   const [records, setRecords] = useState<MemoryRecord[]>([])
   const [total, setTotal] = useState(0)
   const [stats, setStats] = useState<MemoryStats | null>(null)
+  const [usage, setUsage] = useState<MemoryUsageStats | null>(null)
   const [tags, setTags] = useState<MemoryTagCount[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -158,12 +159,13 @@ export function MemorySection({ api, t }: MemorySectionProps): ReactNode {
       limit: pageSize,
       cursor: (page - 1) * pageSize,
     }
-    void Promise.all([api.list(query), api.stats()])
-      .then(([list, nextStats]) => {
+    void Promise.all([api.list(query), api.stats(), api.usage()])
+      .then(([list, nextStats, nextUsage]) => {
         if (current === false) return
         setRecords(list.items)
         setTotal(list.total)
         setStats(nextStats)
+        setUsage(nextUsage)
       })
       .catch((cause: unknown) => {
         if (current === false) return
@@ -322,6 +324,20 @@ export function MemorySection({ api, t }: MemorySectionProps): ReactNode {
               <span>{t('total')} {stats.total} {t('results')}</span>
               <span>{t('activeCount')} {stats.active}</span>
               <span>{t('archivedCount')} {stats.archived}</span>
+            </div>
+          ) : null}
+
+          {usage !== null ? (
+            <div className="hippomemo-usage">
+              <span className="hippomemo-usage-label">{t('usage')}</span>
+              <span title={t('usageRecalled')}>{t('usageRecalled')} {usage.recalled}/{usage.total}</span>
+              <span>{t('usageCited')} {usage.cited}</span>
+              <span>{t('usageNeverRecalled')} {usage.neverRecalled}</span>
+              <span>{t('usageStale')} {usage.staleCount}</span>
+              <span>{t('usageRecallRate')} {(usage.recallRate * 100).toFixed(0)}%</span>
+              <span>{t('usageCitationRate')} {(usage.citationRate * 100).toFixed(0)}%</span>
+              <span>{t('usageConversion')} {(usage.conversionRate * 100).toFixed(0)}%</span>
+              {usage.staleCount > 0 ? <span className="hippomemo-usage-hint">{t('usageStaleHint')}</span> : null}
             </div>
           ) : null}
 
@@ -557,6 +573,14 @@ function MemoryDetail({ api, t, id, refreshKey, onBack, onEdit, onChanged, onDel
         <div className="hippomemo-fact">
           <dt>{t('updatedAt')}</dt>
           <dd>{formatDate(record.updatedAt)}</dd>
+        </div>
+        <div className="hippomemo-fact">
+          <dt>{t('usageRecalled')}</dt>
+          <dd>{(record.recallCount ?? 0)} · {record.lastRecalledAt === null || record.lastRecalledAt === undefined ? '—' : formatDate(record.lastRecalledAt)}</dd>
+        </div>
+        <div className="hippomemo-fact">
+          <dt>{t('usageCited')}</dt>
+          <dd>{(record.citationCount ?? 0)} · {record.lastCitedAt === null || record.lastCitedAt === undefined ? '—' : formatDate(record.lastCitedAt)}</dd>
         </div>
       </dl>
 

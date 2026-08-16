@@ -65,6 +65,15 @@ export const zh = {
   total: '共',
   activeCount: '活跃',
   archivedCount: '归档',
+  usage: '用量',
+  usageRecalled: '被召回',
+  usageCited: '被引用',
+  usageNeverRecalled: '从未召回',
+  usageStale: '30天未召回',
+  usageRecallRate: '召回率',
+  usageCitationRate: '引用率',
+  usageConversion: '召回→引用转化',
+  usageStaleHint: '活跃但长期未被召回的旧记忆，可考虑归档',
 } as const
 
 export const en: Record<keyof typeof zh, string> = {
@@ -134,6 +143,15 @@ export const en: Record<keyof typeof zh, string> = {
   total: 'Total',
   activeCount: 'Active',
   archivedCount: 'Archived',
+  usage: 'Usage',
+  usageRecalled: 'recalled',
+  usageCited: 'cited',
+  usageNeverRecalled: 'never recalled',
+  usageStale: 'stale (>30d)',
+  usageRecallRate: 'recall rate',
+  usageCitationRate: 'citation rate',
+  usageConversion: 'recall→citation',
+  usageStaleHint: 'Active but long-unrecalled memories; consider archiving',
 }
 
 export type HippomemoLocaleKey = keyof typeof zh

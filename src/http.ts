@@ -8,7 +8,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { MemoryService } from './memory-service.ts'
-import type { MemoryListQuery, MemoryPatchInput, MemoryPutInput } from './types.ts'
+import type { CitationListQuery, MemoryListQuery, MemoryPatchInput, MemoryPutInput } from './types.ts'
 
 const PREFIX = '/hippomemo'
 const MAX_BODY_BYTES = 256 * 1024
@@ -44,6 +44,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, service: Memory
 
     if (req.method === 'GET' && sub === '/stats') {
       send(res, 200, okEnvelope(service.stats()))
+      return
+    }
+
+    if (req.method === 'GET' && sub === '/usage') {
+      send(res, 200, okEnvelope(service.usage()))
+      return
+    }
+
+    if (req.method === 'GET' && sub === '/citations') {
+      send(res, 200, okEnvelope(service.citations(citationQueryFromUrl(url))))
       return
     }
 
@@ -120,6 +130,19 @@ function listQueryFromUrl(url: URL): MemoryListQuery {
   if (sort !== null) query.sort = sort as MemoryListQuery['sort']
   const order = url.searchParams.get('order')
   if (order !== null) query.order = order as MemoryListQuery['order']
+  const limit = url.searchParams.get('limit')
+  if (limit !== null) query.limit = Number(limit)
+  const cursor = url.searchParams.get('cursor')
+  if (cursor !== null) query.cursor = Number(cursor)
+  return query
+}
+
+function citationQueryFromUrl(url: URL): CitationListQuery {
+  const query: CitationListQuery = {}
+  const memoryId = url.searchParams.get('memoryId')
+  if (memoryId !== null && memoryId.length > 0) query.memoryId = memoryId
+  const kind = url.searchParams.get('kind')
+  if (kind === 'id-ref' || kind === 'link') query.kind = kind
   const limit = url.searchParams.get('limit')
   if (limit !== null) query.limit = Number(limit)
   const cursor = url.searchParams.get('cursor')

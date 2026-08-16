@@ -14,6 +14,7 @@ HippoMemo persists records in the dsh home, not inside any session or workspace.
 - Chinese-aware token search (CJK unigrams and bigrams plus Latin words).
 - Revisioned, provenance-carrying memory records with active / archived / superseded / candidate statuses.
 - Live settings-page refresh through a same-origin SSE stream.
+- Usage analytics: every search/recall bumps exposure counters (`recallCount`/`lastRecalledAt`), id mentions of injected memories in agent output and `supersedes`/`relatedIds` links record citations (`citationCount`/`lastCitedAt`), and a `memory_usage` tool / `/hippomemo/usage` endpoint report recall rate, citation rate, recall to citation conversion, and staleness.
 - A "Memory" item in the Web settings modal for browsing, searching, editing, archiving, and deleting all memories.
 - Full settings-page UX: debounced full-text search, kind / scope / status / tag filters, sort by recency, creation time, importance, or title (ascending/descending), server-side pagination with page-size control, long-text clamping on cards, and a detail view (full content, tags, provenance, related memories) with back navigation.
 
@@ -104,6 +105,8 @@ All routes are same-origin JSON:
 
     GET    /hippomemo/events
     GET    /hippomemo/stats
+    GET    /hippomemo/usage
+    GET    /hippomemo/citations
     GET    /hippomemo/records
     GET    /hippomemo/records/:id
     POST   /hippomemo/records
@@ -138,8 +141,29 @@ A memory record has:
 - createdAt / updatedAt
 - expiresAt
 - relatedIds
+- recallCount / lastRecalledAt: exposure counters, bumped by every search hit or automatic recall
+- citationCount / lastCitedAt: reference counters, bumped when the agent mentions an injected memory id in its output (id-ref) or links it via supersedes/relatedIds (link)
 
 Global memories are shared across all workspaces. Workspace and project memories are scoped to the path recorded when the agent wrote them.
+
+## Usage metrics: quantifying whether memories are actually used
+
+"Recalled" (surfaced to the agent) is not "referenced" (used by the agent). HippoMemo tracks both:
+
+- **Exposure (Layer 1, mechanical):** every `memory_search` hit and every automatic-recall injection bumps `recallCount` and sets `lastRecalledAt` on the record. Zero cost, no LLM involvement.
+- **Reference (Layer 2, hard signals):**
+  - `id-ref` — the automatic-recall reminder tags each injected memory with `<memory id="...">`; when a later assistant message in the same session mentions that id, a citation row is appended (with a snippet).
+  - `link` — storing or updating a memory whose `supersedes`/`relatedIds` point at an existing memory records a citation on the target.
+- **Influence (Layer 3, optional):** not measured by default. For a judgement call, sample turns and ask a judge model whether the recalled memory actually shaped the output; use it to calibrate Layer 2 numbers.
+
+Derived metrics (`memory_usage` tool, `GET /hippomemo/usage`, or the settings-page summary strip):
+
+- recall rate = recalled / total
+- citation rate = cited / total
+- conversion rate = cited / recalled — of the memories the agent saw, how many it actually used
+- staleCount = active memories never recalled within the staleness window (30 days) — candidates for archiving
+
+Citations are append-only history in the `citations` table (`GET /hippomemo/citations`); counters are best-effort analytics and never drive recall ranking, so a citation storm cannot distort search results.
 
 ## Security notes
 

@@ -36,6 +36,14 @@ export interface MemoryRecord {
   updatedAt: number
   expiresAt: number | null
   relatedIds: string[]
+  /** How many times this memory was surfaced by search or automatic recall. */
+  recallCount: number
+  /** Last time this memory was surfaced (search hit or automatic recall), or null. */
+  lastRecalledAt: number | null
+  /** How many times this memory was cited (id mention in agent output, or a supersedes/relatedIds link). */
+  citationCount: number
+  /** Last time this memory was cited, or null. */
+  lastCitedAt: number | null
 }
 
 export type MemorySortKey = 'updatedAt' | 'createdAt' | 'importance' | 'title'
@@ -91,6 +99,11 @@ export interface MemoryPutInput {
   supersededBy?: string | null
   expiresAt?: number | null
   relatedIds?: string[]
+  /** Usage counters; normally set by the system, exposed here to allow reset. */
+  recallCount?: number
+  lastRecalledAt?: number | null
+  citationCount?: number
+  lastCitedAt?: number | null
 }
 
 export interface MemoryPatchInput {
@@ -109,6 +122,75 @@ export interface MemoryPatchInput {
   supersededBy?: string | null
   expiresAt?: number | null
   relatedIds?: string[]
+  /** Usage counters; normally set by the system, exposed here to allow reset. */
+  recallCount?: number
+  lastRecalledAt?: number | null
+  citationCount?: number
+  lastCitedAt?: number | null
+}
+
+export type CitationKind = 'id-ref' | 'link'
+
+/** One recorded reference to a memory: an id mention in agent output, or a supersedes/relatedIds link. */
+export interface CitationRecord {
+  id: string
+  memoryId: MemoryId
+  sessionId: string
+  kind: CitationKind
+  ts: number
+  /** Surrounding text of an id-ref citation, capped for storage. */
+  snippet?: string
+}
+
+export interface CitationInput {
+  memoryId: MemoryId
+  sessionId: string
+  kind: CitationKind
+  snippet?: string
+}
+
+export interface CitationListQuery {
+  memoryId?: MemoryId
+  kind?: CitationKind
+  limit?: number
+  cursor?: number
+}
+
+export interface CitationListResult {
+  items: CitationRecord[]
+  total: number
+  nextCursor?: number
+}
+
+/** One memory in a usage ranking. count is recallCount for recall ranks and citationCount for citation ranks. */
+export interface MemoryUsageItem {
+  id: MemoryId
+  title: string
+  count: number
+  lastAt: number | null
+}
+
+/** Analytics over exposure (recall) vs reference (citation) of the shared memory layer. */
+export interface MemoryUsageStats {
+  total: number
+  active: number
+  /** Records surfaced at least once. */
+  recalled: number
+  /** Records cited at least once. */
+  cited: number
+  /** Records never surfaced. */
+  neverRecalled: number
+  /** Active records not surfaced within the staleness window. */
+  staleCount: number
+  /** recalled / total. */
+  recallRate: number
+  /** cited / total. */
+  citationRate: number
+  /** cited / recalled: of the memories the agent saw, how many it actually used. */
+  conversionRate: number
+  topRecalled: MemoryUsageItem[]
+  topCited: MemoryUsageItem[]
+  stale: MemoryUsageItem[]
 }
 
 export interface MemoryStats {
