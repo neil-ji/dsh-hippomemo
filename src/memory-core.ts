@@ -52,7 +52,8 @@ export function splitTags(value: string): string[] {
 }
 
 function recordText(record: MemoryRecord): string {
-  return [record.title, record.content, ...record.tags].join('\n')
+  const tags = Array.isArray(record.tags) ? record.tags : []
+  return [record.title, record.content, ...tags].join('\n')
 }
 
 function clampImportance(value: number): number {
@@ -84,7 +85,7 @@ export function normalizeRecord(input: MemoryPutInput, previous?: MemoryRecord, 
     kind: input.kind ?? previous?.kind ?? 'insight',
     title,
     content,
-    tags: splitTags((input.tags ?? previous?.tags ?? []).join(',')),
+    tags: splitTags((input.tags ?? (previous !== undefined && Array.isArray(previous.tags) ? previous.tags : [])).join(',')),
     scope: input.scope ?? previous?.scope ?? 'global',
     workspacePath: input.workspacePath === undefined ? previous?.workspacePath ?? null : input.workspacePath,
     importance: clampImportance(input.importance ?? previous?.importance ?? 0.5),
@@ -120,10 +121,11 @@ export class MemoryCore {
     return this.records.size
   }
 
-  load(records: Iterable<MemoryRecord>): void {
+  load(records: Iterable<MemoryRecord | readonly [MemoryId, MemoryRecord]>): void {
     this.records.clear()
     this.index.clear()
-    for (const record of records) {
+    for (const item of records) {
+      const record = Array.isArray(item) ? item[1] : item
       this.records.set(record.id, record)
       this.indexRecord(record)
     }
@@ -252,7 +254,7 @@ export class MemoryCore {
     if (q.length > 0) {
       const title = tokenize(record.title)
       const content = tokenize(record.content)
-      const tags = record.tags.flatMap(tokenize)
+      const tags = Array.isArray(record.tags) ? record.tags.flatMap(tokenize) : []
       const query = tokenize(q)
       for (const token of query) {
         if (title.includes(token)) {
@@ -280,7 +282,8 @@ export class MemoryCore {
     this.removeFromIndex(record.id)
     const terms = new Set<string>()
     for (const token of tokenize(recordText(record))) terms.add(token)
-    for (const tag of record.tags) for (const token of tokenize(tag)) terms.add(token)
+    const tags = Array.isArray(record.tags) ? record.tags : []
+    for (const tag of tags) for (const token of tokenize(tag)) terms.add(token)
     for (const token of terms) {
       let ids = this.index.get(token)
       if (ids === undefined) {

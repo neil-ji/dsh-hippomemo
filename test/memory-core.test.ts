@@ -168,6 +168,30 @@ test('core list filters workspacePath when scope is omitted', () => {
   assert.equal(core.list({ workspacePath: '/w' }).total, 2)
 })
 
+test('core load accepts storage-domain entry tuples', () => {
+  const core = makeCore()
+  const record: MemoryRecord = {
+    id: 'tuple-1', kind: 'fact', title: 'Tuple', content: 'entry tuple', tags: ['tuple'], scope: 'global',
+    workspacePath: null, importance: 0.5, status: 'active', sourceSessionId: 's1', revision: 1,
+    updatedBy: 'system', supersedes: null, supersededBy: null, createdAt: 1, updatedAt: 2, expiresAt: null, relatedIds: [],
+  }
+  core.load([['tuple-1', record]])
+  assert.equal(core.get('tuple-1')?.title, 'Tuple')
+  assert.equal(core.list().items[0].title, 'Tuple')
+})
+
+test('core tolerates legacy records without tags', () => {
+  const core = makeCore()
+  const legacy = {
+    id: 'legacy-1', kind: 'fact', title: 'Legacy', content: 'no tags field', scope: 'global',
+    workspacePath: null, importance: 0.5, status: 'active', sourceSessionId: 's1', revision: 1,
+    updatedBy: 'system', supersedes: null, supersededBy: null, createdAt: 1, updatedAt: 2, expiresAt: null, relatedIds: [],
+  } as any
+  core.load([legacy])
+  assert.equal(core.get('legacy-1')?.title, 'Legacy')
+  assert.equal(core.search({ q: 'legacy' }).total, 1)
+})
+
 test('core load rebuilds index from durable records', () => {
   const core = makeCore()
   const record: MemoryRecord = {
