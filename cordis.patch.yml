@@ -26,3 +26,12 @@
         maxOutputTokens: 512
         timeoutMs: 60000
         maxCandidatesPerTurn: 4
+
+    # Fire-and-forget keyword enrichment on every memory put (low frequency).
+    - id: hippomemo-terms
+      name: dsh-hippomemo/terms
+      config:
+        enabled: true
+        maxTerms: 12
+        maxOutputTokens: 256
+        timeoutMs: 60000

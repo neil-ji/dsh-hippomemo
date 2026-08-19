@@ -22,14 +22,20 @@ function input(title: string, content: string, extra: Partial<MemoryPutInput> = 
   return { title, content, ...extra }
 }
 
-test('tokenize returns latin words and CJK unigrams/bigrams', () => {
+test('tokenize returns latin words and CJK bigrams (no noisy unigrams)', () => {
   assert.deepEqual(tokenize('Hello world'), ['hello', 'world'])
   const cjk = tokenize('中文测试')
-  for (const token of ['中', '文', '测', '试', '中文', '文测', '测试']) {
+  // Single hanzi must NOT be indexed: they routinely co-occur by accident and
+  // produced false-positive recalls (e.g. 本/量/回/否 matching an unrelated memory).
+  for (const token of ['中', '文', '测', '试']) {
+    assert.equal(cjk.includes(token), false)
+  }
+  for (const token of ['中文', '文测', '测试']) {
     assert.equal(cjk.includes(token), true)
   }
   assert.equal(tokenize('hello 中文').includes('hello'), true)
-  assert.equal(tokenize('hello 中文').includes('中'), true)
+  // An isolated one-character run is still tokenized so single-char searches work.
+  assert.deepEqual(tokenize('环'), ['环'])
 })
 
 test('splitTags trims, dedupes, and drops empty entries', () => {
@@ -112,7 +118,7 @@ test('core search ranks title matches above content matches', () => {
 
 test('core search filters current scope and reports matchedReason', () => {
   const core = makeCore()
-  core.put(input('Global memory', 'shared insight', { scope: 'global' }))
+  core.put(input('Global memory', 'shared insight', { scope: 'global', tags: ['insight'] }))
   core.put(input('Workspace memory', 'local insight', { scope: 'workspace', workspacePath: '/w' }))
   core.put(input('Other workspace', 'local insight', { scope: 'workspace', workspacePath: '/x' }))
   const result = core.search({ q: 'insight', scope: 'current', workspacePath: '/w' })
@@ -240,14 +246,14 @@ test('core load rebuilds index from durable records', () => {
   const core = makeCore()
   const record: MemoryRecord = {
     id: 'loaded-1', kind: 'insight', title: 'Loaded', content: 'durable content', tags: ['loaded'],
-    scope: 'global', workspacePath: null, importance: 0.5, status: 'active', sourceSessionId: 's1',
+    scope: 'workspace', workspacePath: '/w', importance: 0.5, status: 'active', sourceSessionId: 's1',
     revision: 1, updatedBy: 'system', supersedes: null, supersededBy: null, createdAt: 1, updatedAt: 2,
     expiresAt: null, relatedIds: [],
     recallCount: 0, lastRecalledAt: null, citationCount: 0, lastCitedAt: null,
   }
   core.load([record])
   assert.equal(core.get('loaded-1')?.title, 'Loaded')
-  assert.equal(core.search({ q: 'durable' }).total, 1)
+  assert.equal(core.search({ q: 'durable', scope: 'current', workspacePath: '/w' }).total, 1)
 })
 
 test('core markRecalled bumps recall counters and returns changed records', () => {
@@ -338,4 +344,114 @@ test('core usage is empty-safe', () => {
   assert.equal(report.conversionRate, 0)
   assert.deepEqual(report.topRecalled, [])
   assert.deepEqual(report.topCited, [])
+})
+
+test('core search does not recall records with no token overlap', () => {
+  const core = makeCore()
+  // High importance + fresh record must NOT be recalled when no token overlaps the query.
+  core.put(input('dev loop typecheck', 'pnpm install fails without registry', { importance: 1 }))
+  const result = core.search({ q: '提交了吗' })
+  assert.equal(result.total, 0)
+})
+
+test('core search treats stopword-only queries as empty queries', () => {
+  const core = makeCore()
+  core.put(input('A', 'alpha content'))
+  core.put(input('B', 'beta content'))
+  // 'the'/'of'/'in' are all stop tokens, so this degenerates to recency ranking.
+  const result = core.search({ q: 'the of in' })
+  assert.equal(result.total, 2)
+  assert.deepEqual(result.items.map(hit => hit.record.title), ['B', 'A'])
+})
+
+test('core search ignores stop tokens mixed into a query', () => {
+  const core = makeCore()
+  core.put(input('Quick fox', 'the lazy dog', { scope: 'workspace', workspacePath: '/w' }))
+  const result = core.search({ q: 'the lazy', scope: 'current', workspacePath: '/w' })
+  assert.equal(result.total, 1)
+  assert.equal(result.items[0].matchedReason.includes('content'), true)
+})
+
+test('core search idf outranks recency tiebreak for rare tokens', () => {
+  const core = makeCore()
+  core.put(input('Rare', 'rare only'))
+  for (let index = 0; index < 5; index += 1) core.put(input('Common ' + index, 'shared only'))
+  const result = core.search({ q: 'shared rare' })
+  // 'rare' appears in one doc (high idf) while 'shared' appears in five (low idf);
+  // the rare match wins even though its updatedAt is the oldest.
+  assert.equal(result.items[0].record.title, 'Rare')
+})
+
+test('core search index stays consistent after update and delete', () => {
+  const core = makeCore()
+  const record = core.put(input('Old title', 'old content'))
+  assert.equal(core.search({ q: 'old' }).total, 1)
+  core.update(record.id, { title: 'New title', content: 'new content' })
+  assert.equal(core.search({ q: 'old' }).total, 0)
+  assert.equal(core.search({ q: 'new' }).total, 1)
+  core.delete(record.id)
+  assert.equal(core.search({ q: 'new' }).total, 0)
+})
+
+test('core search does not let importance or recency gate recall', () => {
+  const core = makeCore()
+  core.put(input('Unrelated', 'nothing to do with the query', { importance: 1 }))
+  // MatchedReason for an empty query is 'recency'; a non-empty unrelated query returns nothing.
+  const result = core.search({ q: 'zzzz-not-present' })
+  assert.equal(result.total, 0)
+})
+
+test('core search does not match on single shared CJK characters', () => {
+  const core = makeCore()
+  // The npm-2FA style memory shares only single hanzi (本/量/否/确/回) with the query.
+  core.put(input('npm publish automation', '实测结论：npm 自动化 token 已不存在，先发布再 trust，浏览器确认即完成，否则返回 E404', { scope: 'global', importance: 0.85 }))
+  const result = core.search({ q: '记忆 item 质量如何 是否正确召回' })
+  assert.equal(result.total, 0)
+  // Bigram overlap still recalls.
+  const hit = core.search({ q: 'npm 自动化发布' })
+  assert.equal(hit.total, 1)
+})
+
+test('core search indexes searchTerms like tags', () => {
+  const core = makeCore()
+  core.put(input('English title', 'english content only', { searchTerms: ['注入', '召回', 'recall'] }))
+  // A Chinese query matches via the generated bilingual searchTerms even though title/content are English.
+  const result = core.search({ q: '注入' })
+  assert.equal(result.total, 1)
+  assert.equal(result.items[0].matchedReason.includes('tag'), true)
+})
+
+test('core search requires global memories to match at least two tokens (or title)', () => {
+  const core = makeCore()
+  core.put(input('Global pref', 'hippomemo stats and events endpoints', { scope: 'global' }))
+  core.put(input('Workspace mem', 'hippomemo stats and events endpoints', { scope: 'workspace', workspacePath: '/w' }))
+  // Single shared latin token: the global memory is filtered out, the workspace one is not.
+  const single = core.search({ q: 'hippomemo', scope: 'current', workspacePath: '/w' })
+  assert.equal(single.items.some(hit => hit.record.scope === 'global'), false)
+  assert.equal(single.items.some(hit => hit.record.scope === 'workspace'), true)
+  // Two shared tokens: the global memory is eligible again.
+  const multi = core.search({ q: 'hippomemo stats', scope: 'current', workspacePath: '/w' })
+  assert.equal(multi.items.some(hit => hit.record.scope === 'global'), true)
+  // A single token matching the global memory's TITLE still counts as a strong signal.
+  const titleHit = core.search({ q: 'Global', scope: 'current', workspacePath: '/w' })
+  assert.equal(titleHit.items.some(hit => hit.record.scope === 'global'), true)
+})
+
+test('core search does not leak stopped-bigram single characters (是否/因为/所以)', () => {
+  const core = makeCore()
+  core.put(input('Other project', '否则该流程返回失败，因为重试超时', {}))
+  // Query shares only 否/因/所 single characters with the memory via stopped bigrams.
+  const result = core.search({ q: '是否正确 是否成功' })
+  assert.equal(result.total, 0)
+})
+
+test('core search updates searchTerms on revision and drops them on delete', () => {
+  const core = makeCore()
+  const record = core.put(input('A', 'one', { searchTerms: ['alpha'] }))
+  assert.equal(core.search({ q: 'alpha' }).total, 1)
+  core.update(record.id, { searchTerms: ['beta'] })
+  assert.equal(core.search({ q: 'alpha' }).total, 0)
+  assert.equal(core.search({ q: 'beta' }).total, 1)
+  core.delete(record.id)
+  assert.equal(core.search({ q: 'beta' }).total, 0)
 })

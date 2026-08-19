@@ -24,6 +24,7 @@ export default [
       tool: 'src/tool.ts',
       context: 'src/context.ts',
       extractor: 'src/extractor.ts',
+      terms: 'src/memory-terms.ts',
     },
     outDir: 'lib',
     format: ['esm'],

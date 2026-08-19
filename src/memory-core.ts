@@ -33,19 +33,68 @@ function defaultNewId(): string {
 
 /** Tokenize Latin words plus CJK unigrams and bigrams for small exact/partial search. */
 export function tokenize(value: string): string[] {
+  return [...new Set(tokenStream(value))]
+}
+
+/** Ordered, possibly-repeating token stream (used for tf/BM25 accounting). */
+function tokenStream(value: string): string[] {
   const lower = value.toLocaleLowerCase()
-  const tokens = new Set<string>()
+  const out: string[] = []
   const latin = lower.match(/[a-z0-9_]+/g) ?? []
-  for (const token of latin) tokens.add(token)
+  out.push(...latin)
   const cjkRuns = lower.match(/\p{Script=Han}+/gu) ?? []
   for (const run of cjkRuns) {
     const chars = [...run]
-    for (const char of chars) tokens.add(char)
-    for (let index = 0; index < chars.length - 1; index += 1) {
-      tokens.add(chars[index] + chars[index + 1])
+    // CJK bigrams carry the recall signal; single characters are too noisy for
+    // matching (an unrelated query and memory routinely share one hanzi, e.g.
+    // 本/量/回/否), which produced the false-positive recalls. Keep the unigram
+    // only for an isolated one-character run so single-character searches still work.
+    if (chars.length === 1) {
+      out.push(chars[0])
+    } else {
+      for (let index = 0; index < chars.length - 1; index += 1) out.push(chars[index] + chars[index + 1])
     }
   }
-  return [...tokens]
+  return out
+}
+
+/** Function-word tokens that carry no recall signal; excluded from the index and from queries. */
+const STOP_TOKENS = new Set<string>([
+  'a', 'an', 'the', 'of', 'in', 'on', 'at', 'to', 'for', 'and', 'or', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'this', 'that', 'these', 'those', 'it', 'its', 'as', 'with', 'by', 'from', 'we', 'you', 'they', 'he', 'she', 'i',
+  '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没', '看', '好', '自', '己', '这', '那', '之', '与', '及', '等', '为', '或', '对', '其', '可', '以', '们', '而', '且', '被', '把', '让', '从', '向', '于', '但', '又', '再', '只', '还', '否', '因', '所',
+  '我们', '你们', '他们', '这个', '那个', '什么', '怎么', '为什么', '是否', '可以', '因为', '所以', '但是',
+])
+
+function isStopToken(token: string): boolean {
+  return STOP_TOKENS.has(token)
+}
+
+const BM25_K1 = 1.2
+const BM25_B = 0.75
+const W_TITLE = 8
+const W_TAG = 6
+const W_CONTENT = 2
+
+interface FieldFreq { title: number; content: number; tag: number }
+interface FieldLength { title: number; content: number; tag: number }
+
+/** idf(t) = ln(1 + (N - df + 0.5) / (df + 0.5)), clamped positive. */
+function idfScore(docCount: number, docFreq: number): number {
+  return Math.log(1 + (docCount - docFreq + 0.5) / (docFreq + 0.5))
+}
+
+/** BM25 term-frequency saturation with document-length normalization per field. */
+function bm25Field(freq: number, length: number, avgLength: number): number {
+  if (freq <= 0) return 0
+  if (avgLength <= 0) return freq
+  const denominator = freq + BM25_K1 * (1 - BM25_B + BM25_B * (length / avgLength))
+  return (freq * (BM25_K1 + 1)) / denominator
+}
+
+/** Recency/importance ranking tiebreak; never gates recall on its own. */
+function rankScore(record: MemoryRecord, now: number): number {
+  const ageDays = Math.max(0, (now - record.updatedAt) / 86_400_000)
+  return record.importance * 2 + Math.max(0, 2 - ageDays)
 }
 
 export function splitTags(value: string): string[] {
@@ -54,6 +103,7 @@ export function splitTags(value: string): string[] {
 
 /** Fill usage counters on records that predate the analytics fields (or are otherwise partial). */
 function completeRecord(record: MemoryRecord): MemoryRecord {
+  if (record.searchTerms === undefined) record.searchTerms = []
   if (record.recallCount === undefined) record.recallCount = 0
   if (record.lastRecalledAt === undefined) record.lastRecalledAt = null
   if (record.citationCount === undefined) record.citationCount = 0
@@ -61,10 +111,6 @@ function completeRecord(record: MemoryRecord): MemoryRecord {
   return record
 }
 
-function recordText(record: MemoryRecord): string {
-  const tags = Array.isArray(record.tags) ? record.tags : []
-  return [record.title, record.content, ...tags].join('\n')
-}
 
 function clampImportance(value: number): number {
   return Math.max(0, Math.min(1, value))
@@ -130,6 +176,7 @@ export function normalizeRecord(input: MemoryPutInput, previous?: MemoryRecord, 
     updatedAt: now,
     expiresAt: input.expiresAt === undefined ? previous?.expiresAt ?? null : input.expiresAt,
     relatedIds: [...new Set(input.relatedIds ?? previous?.relatedIds ?? [])].slice(0, 16),
+    searchTerms: [...new Set(input.searchTerms ?? previous?.searchTerms ?? [])].slice(0, 32),
     recallCount: input.recallCount ?? previous?.recallCount ?? 0,
     lastRecalledAt: input.lastRecalledAt === undefined ? (previous?.lastRecalledAt ?? null) : input.lastRecalledAt,
     citationCount: input.citationCount ?? previous?.citationCount ?? 0,
@@ -141,7 +188,10 @@ export function normalizeRecord(input: MemoryPutInput, previous?: MemoryRecord, 
 
 export class MemoryCore {
   private readonly records = new Map<MemoryId, MemoryRecord>()
-  private readonly index = new Map<string, Set<MemoryId>>()
+  private readonly index = new Map<string, Map<MemoryId, FieldFreq>>()
+  private readonly recordTokens = new Map<MemoryId, Set<string>>()
+  private readonly fieldLengths = new Map<MemoryId, FieldLength>()
+  private readonly totalFieldLengths: FieldLength = { title: 0, content: 0, tag: 0 }
   private readonly config: MemoryCoreConfig
   private readonly deps: Required<MemoryCoreDeps>
 
@@ -157,6 +207,11 @@ export class MemoryCore {
   load(records: Iterable<MemoryRecord | readonly [MemoryId, MemoryRecord]>): void {
     this.records.clear()
     this.index.clear()
+    this.recordTokens.clear()
+    this.fieldLengths.clear()
+    this.totalFieldLengths.title = 0
+    this.totalFieldLengths.content = 0
+    this.totalFieldLengths.tag = 0
     for (const item of records) {
       const record = completeRecord(Array.isArray(item) ? item[1] : item)
       this.records.set(record.id, record)
@@ -197,18 +252,75 @@ export class MemoryCore {
   search(query: MemoryListQuery = {}): MemorySearchResult {
     const q = query.q?.trim().toLocaleLowerCase() ?? ''
     const limit = query.limit ?? this.config.defaultRecallLimit
-    const workspacePath = query.workspacePath
+    const qTokens = q.length === 0 ? [] : tokenStream(q).filter(token => isStopToken(token) === false)
+    const filtered = this.filter(query)
+    const docCount = this.records.size
 
-    let hits = this.filter(query).map((record) => this.scoreRecord(record, q))
-    if (q.length > 0) {
-      hits = hits.filter(hit => hit.score > 0)
-    }
-    hits.sort((left, right) => right.score - left.score || sortByUpdated(left.record, right.record))
+    type Hit = { record: MemoryRecord; score: number; reasons: string[] }
+    let hits: Hit[]
 
-    if (query.scope === 'current') {
-      hits = hits.filter(hit =>
-        hit.record.scope === 'global' || (workspacePath !== undefined && hit.record.workspacePath === workspacePath))
+    if (qTokens.length === 0) {
+      // No informative query: rank the scope by recency/importance only.
+      hits = filtered.map(record => ({ record, score: rankScore(record, this.deps.now()), reasons: ['recency'] }))
+    } else {
+      const avgLength: FieldLength = docCount === 0
+        ? { title: 0, content: 0, tag: 0 }
+        : {
+            title: this.totalFieldLengths.title / docCount,
+            content: this.totalFieldLengths.content / docCount,
+            tag: this.totalFieldLengths.tag / docCount,
+          }
+      const inScope = new Set(filtered.map(record => record.id))
+      const matched = new Map<MemoryId, { score: number; reasons: Set<string>; tokens: Set<string> }>()
+      for (const token of qTokens) {
+        const postings = this.index.get(token)
+        if (postings === undefined) continue
+        const idf = idfScore(docCount, postings.size)
+        for (const [id, freq] of postings) {
+          if (inScope.has(id) === false) continue
+          const record = this.records.get(id)
+          if (record === undefined) continue
+          const lengths = this.fieldLengths.get(id)
+          if (lengths === undefined) continue
+          const contribution = idf * (
+            W_TITLE * bm25Field(freq.title, lengths.title, avgLength.title)
+            + W_TAG * bm25Field(freq.tag, lengths.tag, avgLength.tag)
+            + W_CONTENT * bm25Field(freq.content, lengths.content, avgLength.content)
+          )
+          if (contribution <= 0) continue
+          let acc = matched.get(id)
+          if (acc === undefined) {
+            acc = { score: 0, reasons: new Set(), tokens: new Set() }
+            matched.set(id, acc)
+          }
+          acc.tokens.add(token)
+          acc.score += contribution
+          if (freq.title > 0) acc.reasons.add('title')
+          if (freq.tag > 0) acc.reasons.add('tag')
+          if (freq.content > 0) acc.reasons.add('content')
+        }
+      }
+      hits = [...matched.entries()]
+        .filter(([id, acc]) => {
+          // Global memories are eligible in every workspace, so they must carry
+          // a stronger signal than a single accidental shared token (e.g. a common
+          // latin word in prose). Title and tag/searchTerms hits are deliberate
+          // index terms, so they count as strong signals on their own.
+          const record = this.records.get(id)
+          if (record === undefined || record.scope !== 'global') return true
+          if (acc.tokens.size >= 2 || acc.reasons.has('title') || acc.reasons.has('tag')) return true
+          return false
+        })
+        .map(([id, acc]) => ({
+          record: this.records.get(id)!,
+          score: acc.score,
+          reasons: [...acc.reasons],
+        }))
     }
+
+    hits.sort((left, right) => right.score - left.score
+      || rankScore(right.record, this.deps.now()) - rankScore(left.record, this.deps.now())
+      || sortByUpdated(left.record, right.record))
 
     const budget = this.config.maxRecallChars
     let used = 0
@@ -357,53 +469,64 @@ export class MemoryCore {
     return records
   }
 
-  private scoreRecord(record: MemoryRecord, q: string): { record: MemoryRecord; score: number; reasons: string[] } {
-    const reasons: string[] = []
-    let score = 0
-    if (q.length > 0) {
-      const title = tokenize(record.title)
-      const content = tokenize(record.content)
-      const tags = Array.isArray(record.tags) ? record.tags.flatMap(tokenize) : []
-      const query = tokenize(q)
-      for (const token of query) {
-        if (title.includes(token)) {
-          score += 8
-          if (reasons.includes('title') === false) reasons.push('title')
-        }
-        if (tags.includes(token)) {
-          score += 6
-          if (reasons.includes('tag') === false) reasons.push('tag')
-        }
-        if (content.includes(token)) {
-          score += 2
-          if (reasons.includes('content') === false) reasons.push('content')
-        }
-      }
-    }
-    score += record.importance * 2
-    const ageDays = Math.max(0, (this.deps.now() - record.updatedAt) / 86_400_000)
-    score += Math.max(0, 2 - ageDays)
-    if (q.length === 0) reasons.push('recency')
-    return { record, score, reasons }
-  }
 
   private indexRecord(record: MemoryRecord): void {
     this.removeFromIndex(record.id)
-    const terms = new Set<string>()
-    for (const token of tokenize(recordText(record))) terms.add(token)
-    const tags = Array.isArray(record.tags) ? record.tags : []
-    for (const tag of tags) for (const token of tokenize(tag)) terms.add(token)
-    for (const token of terms) {
-      let ids = this.index.get(token)
-      if (ids === undefined) {
-        ids = new Set()
-        this.index.set(token, ids)
+    const freq = new Map<string, FieldFreq>()
+    const tokens = new Set<string>()
+    const lengths: FieldLength = { title: 0, content: 0, tag: 0 }
+    const accumulate = (value: string, field: 'title' | 'content' | 'tag'): void => {
+      for (const token of tokenStream(value)) {
+        if (isStopToken(token)) continue
+        lengths[field] += 1
+        tokens.add(token)
+        let f = freq.get(token)
+        if (f === undefined) {
+          f = { title: 0, content: 0, tag: 0 }
+          freq.set(token, f)
+        }
+        f[field] += 1
       }
-      ids.add(record.id)
+    }
+    accumulate(record.title, 'title')
+    accumulate(record.content, 'content')
+    const tags = Array.isArray(record.tags) ? record.tags : []
+    for (const tag of tags) accumulate(tag, 'tag')
+    const searchTerms = Array.isArray(record.searchTerms) ? record.searchTerms : []
+    for (const term of searchTerms) accumulate(term, 'tag')
+
+    this.fieldLengths.set(record.id, lengths)
+    this.totalFieldLengths.title += lengths.title
+    this.totalFieldLengths.content += lengths.content
+    this.totalFieldLengths.tag += lengths.tag
+    this.recordTokens.set(record.id, tokens)
+    for (const [token, f] of freq) {
+      let postings = this.index.get(token)
+      if (postings === undefined) {
+        postings = new Map()
+        this.index.set(token, postings)
+      }
+      postings.set(record.id, f)
     }
   }
 
   private removeFromIndex(id: MemoryId): void {
-    for (const ids of this.index.values()) ids.delete(id)
+    const tokens = this.recordTokens.get(id)
+    if (tokens !== undefined) {
+      for (const token of tokens) {
+        const postings = this.index.get(token)
+        if (postings === undefined) continue
+        postings.delete(id)
+        if (postings.size === 0) this.index.delete(token)
+      }
+      this.recordTokens.delete(id)
+    }
+    const lengths = this.fieldLengths.get(id)
+    if (lengths !== undefined) {
+      this.totalFieldLengths.title -= lengths.title
+      this.totalFieldLengths.content -= lengths.content
+      this.totalFieldLengths.tag -= lengths.tag
+      this.fieldLengths.delete(id)
+    }
   }
 }

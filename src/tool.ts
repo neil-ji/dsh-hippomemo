@@ -44,6 +44,7 @@ export function apply(ctx: Context): void {
       tags: { type: 'string', description: 'Comma-separated tags.' },
       scope: { type: 'string', enum: ['global', 'workspace', 'project'], description: 'Visibility scope. Defaults to global.' },
       importance: { type: 'number', description: '0 to 1. Defaults to 0.5.' },
+      searchTerms: { type: 'string', description: 'Comma-separated bilingual/synonym keywords that help a Chinese or English query find this memory.' },
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {
@@ -54,6 +55,7 @@ export function apply(ctx: Context): void {
         tags: splitTags(args.tags),
         scope: args.scope,
         importance: args.importance,
+        searchTerms: splitTags(args.searchTerms),
         workspacePath: exec.agent?.session.header.cwd ?? null,
         sourceSessionId: exec.agent?.id ?? 'user',
       }
@@ -128,6 +130,7 @@ export function apply(ctx: Context): void {
       scope: { type: 'string', enum: ['global', 'workspace', 'project'], description: 'New scope.' },
       importance: { type: 'number', description: 'New importance from 0 to 1.' },
       status: { type: 'string', enum: ['active', 'archived', 'superseded', 'candidate'], description: 'New status.' },
+      searchTerms: { type: 'string', description: 'Comma-separated replacement bilingual/synonym search keywords.' },
     },
     output: TEXT_OUTPUT,
     execute(args, exec) {
@@ -139,6 +142,7 @@ export function apply(ctx: Context): void {
       if (args.scope !== undefined) patch.scope = args.scope
       if (args.importance !== undefined) patch.importance = args.importance
       if (args.status !== undefined) patch.status = args.status
+      if (args.searchTerms !== undefined) patch.searchTerms = splitTags(args.searchTerms)
       return ctx.memory.update(args.id, patch).then(record => JSON.stringify(record))
     },
     presentCall(args) {

@@ -142,7 +142,7 @@ function citationQueryFromUrl(url: URL): CitationListQuery {
   const memoryId = url.searchParams.get('memoryId')
   if (memoryId !== null && memoryId.length > 0) query.memoryId = memoryId
   const kind = url.searchParams.get('kind')
-  if (kind === 'id-ref' || kind === 'link') query.kind = kind
+  if (kind === 'id-ref' || kind === 'title-ref' || kind === 'link') query.kind = kind
   const limit = url.searchParams.get('limit')
   if (limit !== null) query.limit = Number(limit)
   const cursor = url.searchParams.get('cursor')

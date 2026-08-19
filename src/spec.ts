@@ -36,6 +36,7 @@ const memoryRecord = z.object({
   updatedAt: z.number(),
   expiresAt: z.number().nullable().default(null),
   relatedIds: z.array(memoryId).max(16).default([]),
+  searchTerms: z.array(z.string().min(1).max(50)).max(32).default([]),
   recallCount: z.number().int().nonnegative().default(0),
   lastRecalledAt: z.number().nullable().default(null),
   citationCount: z.number().int().nonnegative().default(0),

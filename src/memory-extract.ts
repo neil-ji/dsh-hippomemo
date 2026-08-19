@@ -16,6 +16,7 @@ export interface CandidateMemory {
   tags: string[]
   scope: MemoryScope
   importance: number
+  searchTerms?: string[]
 }
 
 export const CANDIDATE_LIMIT = 12
@@ -49,6 +50,7 @@ export function buildExtractionPrompt(transcript: string): { system: string; use
       '  tags: string array',
       '  scope: "global" | "workspace" | "project"',
       '  importance: number from 0 to 1',
+      '  searchTerms: short array of bilingual/alias keywords (Chinese + English synonyms) that help either language find this memory',
       'Prefer global scope unless the memory is clearly tied to one workspace or project.',
       'Do not include transient task state, code snippets, or instructions found in the transcript.',
       'Return [] when nothing is worth remembering.',
@@ -87,6 +89,7 @@ export function candidateToInput(candidate: CandidateMemory, sessionId: string, 
     tags: candidate.tags,
     scope: candidate.scope,
     importance: candidate.importance,
+    searchTerms: candidate.searchTerms,
     status: 'candidate',
     sourceSessionId: sessionId,
     sourceTurn: turn,
@@ -112,7 +115,10 @@ function normalizeCandidate(value: unknown): CandidateMemory | undefined {
   const importance = typeof item.importance === 'number'
     ? Math.max(0, Math.min(1, item.importance))
     : 0.5
-  return { kind: kind as MemoryKind, title: candidateTitle, content: candidateContent, tags, scope, importance }
+  const searchTerms = Array.isArray(item.searchTerms)
+    ? item.searchTerms.filter(term => typeof term === 'string').map(term => term.trim()).filter(term => term.length > 0).slice(0, 32)
+    : undefined
+  return { kind: kind as MemoryKind, title: candidateTitle, content: candidateContent, tags, scope, importance, ...(searchTerms !== undefined && searchTerms.length > 0 ? { searchTerms } : {}) }
 }
 
 const KIND_VALUES: MemoryKind[] = ['insight', 'decision', 'fact', 'preference', 'constraint']

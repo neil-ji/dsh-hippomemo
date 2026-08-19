@@ -11,7 +11,7 @@ HippoMemo persists records in the dsh home, not inside any session or workspace.
 - Agent tools: memory_remember, memory_search, memory_get, memory_update, memory_forget.
 - Automatic first-step recall for each agent session, with per-session deduplication.
 - Optional automatic candidate extraction after each turn, using the configured model route or the agent-default model.
-- Chinese-aware token search (CJK unigrams and bigrams plus Latin words).
+- Chinese-aware token search (CJK bigrams plus Latin words; single hanzi are excluded to avoid noisy false-positive recalls, with a single-character fallback).
 - Revisioned, provenance-carrying memory records with active / archived / superseded / candidate statuses.
 - Live settings-page refresh through a same-origin SSE stream.
 - Usage analytics: every search/recall bumps exposure counters (`recallCount`/`lastRecalledAt`), id mentions of injected memories in agent output and `supersedes`/`relatedIds` links record citations (`citationCount`/`lastCitedAt`), and a `memory_usage` tool / `/hippomemo/usage` endpoint report recall rate, citation rate, recall to citation conversion, and staleness.
@@ -152,7 +152,7 @@ Global memories are shared across all workspaces. Workspace and project memories
 
 - **Exposure (Layer 1, mechanical):** every `memory_search` hit and every automatic-recall injection bumps `recallCount` and sets `lastRecalledAt` on the record. Zero cost, no LLM involvement.
 - **Reference (Layer 2, hard signals):**
-  - `id-ref` — the automatic-recall reminder tags each injected memory with `<memory id="...">`; when a later assistant message in the same session mentions that id, a citation row is appended (with a snippet).
+  - `id-ref` / `title-ref` — the automatic-recall reminder tags each injected memory with `<memory id="...">`; when a later assistant message in the same session mentions that id (or reproduces the memory title verbatim as a weaker signal), a citation row is appended (with a snippet), at most once per session per memory.
   - `link` — storing or updating a memory whose `supersedes`/`relatedIds` point at an existing memory records a citation on the target.
 - **Influence (Layer 3, optional):** not measured by default. For a judgement call, sample turns and ask a judge model whether the recalled memory actually shaped the output; use it to calibrate Layer 2 numbers.
 

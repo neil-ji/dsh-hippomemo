@@ -22,6 +22,10 @@
       "types": "./lib/types/extractor.d.ts",
       "default": "./lib/extractor.js"
     },
+    "./terms": {
+      "types": "./lib/types/memory-terms.d.ts",
+      "default": "./lib/terms.js"
+    },
     "./client": {
       "types": "./lib/types/client/index.d.ts",
       "default": "./lib/client.js"
@@ -51,8 +55,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --test-reporter=spec test/memory-core.test.ts test/memory-extract.test.ts",
-    "test:coverage": "node --test --experimental-test-coverage test/memory-core.test.ts test/memory-extract.test.ts",
+    "test": "node --test --test-reporter=spec test/memory-core.test.ts test/memory-extract.test.ts test/memory-terms.test.ts",
+    "test:coverage": "node --test --experimental-test-coverage test/memory-core.test.ts test/memory-extract.test.ts test/memory-terms.test.ts",
     "build": "tsdown",
     "prepare": "tsdown"
   },
